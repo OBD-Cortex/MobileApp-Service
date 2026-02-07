@@ -1,0 +1,12 @@
+# Database & API
+pymongo
+google-generativeai
+requests
+
+# PDF & Text Processing
+pypdf
+sentence-transformers
+
+# Utilities
+numpy
+tqdm
