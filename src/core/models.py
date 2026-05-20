@@ -5,7 +5,7 @@ from sentence_transformers import SentenceTransformer
 print("[Models] Loading Embedding Model (all-MiniLM-L6-v2)...")
 try:
     # Using the requested MiniLM model
-    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+    embed_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
     print("Embedder Ready.")
 except Exception as e:
     print(f"Model Load Failed: {e}")
