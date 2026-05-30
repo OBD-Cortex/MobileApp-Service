@@ -5,15 +5,17 @@ import shutil
 import tempfile
 import uuid
 import datetime
-from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File, BackgroundTasks
+from typing import List, Dict, Any, Optional
+from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File, BackgroundTasks, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+import secrets
 
 from services.llm_agent import generate_diagnostic
-from core.database import col_chat_history, col_jobs
+from core.database import col_chat_history, col_jobs, col_telemetry, col_devices
 from core.config import MOBILE_API_KEY
 from services.ingest_service import ingest_pdf, ingest_csv     
 
@@ -49,6 +51,13 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+
+class DeviceRegisterRequest(BaseModel):
+    device_token: str
+    vin: str
+
+class GenerateDevicesRequest(BaseModel):
+    count: int
 
 # ==========================================
 # API ENDPOINTS
@@ -184,6 +193,109 @@ def get_ingestion_status(job_id: str, api_key: str = Depends(verify_api_key)):
         "updated_at": job_doc.get("updated_at")
     }
 
+
+# ==========================================
+# EDGE HARDWARE ENDPOINTS
+# ==========================================
+
+@app.post("/api/telemetry")
+def upload_telemetry(payloads: List[Dict[str, Any]], api_key: str = Depends(verify_api_key)):
+    """Receives a batch of telemetry snapshots from the Edge Gateway."""
+    if not payloads:
+        return {"status": "success", "inserted": 0}
+    try:
+        col_telemetry.insert_many(payloads)
+        return {"status": "success", "inserted": len(payloads)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/device/register")
+def register_device(request: DeviceRegisterRequest, api_key: str = Depends(verify_api_key)):
+    """Pairs an Edge Gateway to a specific VIN if the token is valid."""
+    device = col_devices.find_one({"device_token": request.device_token})
+    if not device:
+        raise HTTPException(status_code=404, detail="Invalid device token.")
+        
+    col_devices.update_one(
+        {"device_token": request.device_token},
+        {"$set": {
+            "status": "registered",
+            "vin": request.vin,
+            "updated_at": datetime.datetime.utcnow().isoformat()
+        }}
+    )
+    return {"status": "success", "message": "Device registered."}
+
+
+# ==========================================
+# ADMIN DASHBOARD ENDPOINTS
+# ==========================================
+
+@app.get("/api/admin/devices")
+def get_admin_devices(
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    api_key: str = Depends(verify_api_key)
+):
+    filter_query = {}
+    if status and status != 'all':
+        filter_query["status"] = status
+    if search:
+        query = search.strip()
+        filter_query["$or"] = [
+            { "device_token": { "$regex": query, "$options": "i" } },
+            { "vin": { "$regex": query, "$options": "i" } },
+        ]
+    devices = list(col_devices.find(filter_query).sort("created_at", -1).limit(200))
+    for d in devices:
+        d["_id"] = str(d["_id"])
+    return {"devices": devices, "count": len(devices)}
+
+@app.get("/api/admin/stats")
+def get_admin_stats(api_key: str = Depends(verify_api_key)):
+    total = col_devices.count_documents({})
+    manufactured = col_devices.count_documents({"status": "manufactured"})
+    registered = col_devices.count_documents({"status": "registered"})
+    paired = col_devices.count_documents({"status": "paired"})
+    return {
+        "total": total,
+        "manufactured": manufactured,
+        "registered": registered,
+        "paired": paired
+    }
+
+@app.post("/api/admin/devices/generate")
+def generate_devices(request: GenerateDevicesRequest, api_key: str = Depends(verify_api_key)):
+    if request.count < 1 or request.count > 100:
+        raise HTTPException(status_code=400, detail="Count must be between 1 and 100")
+        
+    new_devices = []
+    tokens = []
+    now = datetime.datetime.utcnow().isoformat()
+    
+    for _ in range(request.count):
+        token = secrets.token_hex(4).upper()
+        tokens.append(token)
+        new_devices.append({
+            "device_token": token,
+            "status": "manufactured",
+            "created_at": now,
+            "updated_at": now
+        })
+        
+    col_devices.insert_many(new_devices)
+    return {"status": "success", "generated": request.count, "tokens": tokens}
+
+@app.delete("/api/admin/devices/{token}")
+def delete_device(token: str, api_key: str = Depends(verify_api_key)):
+    device = col_devices.find_one({"device_token": token})
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if device.get("status") == "paired":
+        raise HTTPException(status_code=400, detail="Cannot delete a paired device")
+        
+    col_devices.delete_one({"device_token": token})
+    return {"status": "success"}
 
 # ==========================================
 # STATIC FILES & NETWORK HELPER
