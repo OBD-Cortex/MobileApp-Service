@@ -1,0 +1,25 @@
+# Database & API
+pymongo
+certifi
+python-dotenv
+google-generativeai
+requests
+
+# Server
+fastapi
+uvicorn
+python-multipart
+
+# PDF & Text Processing
+pypdf
+sentence-transformers
+llama-cloud
+
+# Utilities
+numpy
+tqdm
+pandas
+
+# Provisioner Tool (QR code generation)
+qrcode
+Pillow

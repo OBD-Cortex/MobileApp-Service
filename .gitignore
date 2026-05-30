@@ -1,0 +1,10 @@
+# .gitignore
+__pycache__/
+*.pyc
+.env
+.venv/
+obd-venv/
+
+# Generated QR code labels (contain device tokens — never commit)
+src/tools/qr_output/*.png
+src/tools/qr_output/*.svg
