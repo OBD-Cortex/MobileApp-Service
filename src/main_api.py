@@ -42,6 +42,16 @@ def verify_api_key(api_key: str = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
 
+# This ensures that physical Edge devices are authenticated via their unique token
+device_token_header = APIKeyHeader(name="X-Device-Token", auto_error=True)
+
+def verify_device_token(device_token: str = Security(device_token_header)):
+    """Verifies that the incoming request contains a valid hardware device token."""
+    device = col_devices.find_one({"device_token": device_token})
+    if not device:
+        raise HTTPException(status_code=403, detail="Invalid Device Token")
+    return device_token
+
 # ==========================================
 # DATA MODELS
 # ==========================================
@@ -53,7 +63,6 @@ class ChatResponse(BaseModel):
     response: str
 
 class DeviceRegisterRequest(BaseModel):
-    device_token: str
     vin: str
 
 class GenerateDevicesRequest(BaseModel):
@@ -199,7 +208,7 @@ def get_ingestion_status(job_id: str, api_key: str = Depends(verify_api_key)):
 # ==========================================
 
 @app.post("/api/telemetry")
-def upload_telemetry(payloads: List[Dict[str, Any]], api_key: str = Depends(verify_api_key)):
+def upload_telemetry(payloads: List[Dict[str, Any]], device_token: str = Depends(verify_device_token)):
     """Receives a batch of telemetry snapshots from the Edge Gateway."""
     if not payloads:
         return {"status": "success", "inserted": 0}
@@ -210,14 +219,10 @@ def upload_telemetry(payloads: List[Dict[str, Any]], api_key: str = Depends(veri
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/device/register")
-def register_device(request: DeviceRegisterRequest, api_key: str = Depends(verify_api_key)):
+def register_device(request: DeviceRegisterRequest, device_token: str = Depends(verify_device_token)):
     """Pairs an Edge Gateway to a specific VIN if the token is valid."""
-    device = col_devices.find_one({"device_token": request.device_token})
-    if not device:
-        raise HTTPException(status_code=404, detail="Invalid device token.")
-        
     col_devices.update_one(
-        {"device_token": request.device_token},
+        {"device_token": device_token},
         {"$set": {
             "status": "registered",
             "vin": request.vin,
