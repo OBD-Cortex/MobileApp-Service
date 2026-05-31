@@ -21,10 +21,16 @@ from services.ingest_service import ingest_pdf, ingest_csv
 
 app = FastAPI(title="OBD-Cortex API")
 
-# Allow Cross-Origin requests (Adjust in production to your specific needs)
+# Load allowed CORS origins from environment (default: allow all)
+# Note: Dashboard makes server-side fetch() calls, not browser requests, so CORS
+# doesn't apply to it. This is mainly for the web-app test UI and future frontends.
+_cors_raw = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = ["*"] if _cors_raw.strip() == "*" else [o.strip() for o in _cors_raw.split(",")]
+
+# Allow Cross-Origin requests
 app.add_middleware(
     CORSMiddleware, 
-    allow_origins=["*"], 
+    allow_origins=CORS_ORIGINS, 
     allow_credentials=False, 
     allow_methods=["*"], 
     allow_headers=["*"]

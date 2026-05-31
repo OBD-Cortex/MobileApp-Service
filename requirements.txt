@@ -1,25 +1,17 @@
 # Database & API
-pymongo
-certifi
-python-dotenv
-google-generativeai
-requests
+pymongo>=4.7,<5.0
+certifi>=2024.0
+python-dotenv>=1.0,<2.0
+requests>=2.31,<3.0
 
 # Server
-fastapi
-uvicorn
-python-multipart
+fastapi>=0.115,<1.0
+uvicorn>=0.30,<1.0
+python-multipart>=0.0.9
 
-# PDF & Text Processing
-pypdf
-sentence-transformers
-llama-cloud
+# AI & Text Processing
+sentence-transformers>=3.0,<4.0
+llama-cloud>=0.1.0
 
 # Utilities
-numpy
-tqdm
-pandas
-
-# Provisioner Tool (QR code generation)
-qrcode
-Pillow
+pandas>=2.2,<3.0

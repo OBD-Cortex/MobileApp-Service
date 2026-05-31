@@ -19,6 +19,7 @@ env_path = os.getenv("ENV_PATH")
 if env_path and os.path.exists(env_path):
     load_dotenv(dotenv_path=env_path)
 
+
 # -------------------------------------------------------------
 # 2. APPLICATION CONSTANTS
 # -------------------------------------------------------------
