@@ -71,6 +71,9 @@ class ChatResponse(BaseModel):
 
 class DeviceRegisterRequest(BaseModel):
     vin: str
+    brand: str = "Unknown"
+    model: str = "Unknown"
+    year: str = "Unknown"
 
 class GenerateDevicesRequest(BaseModel):
     count: int
@@ -237,6 +240,9 @@ def register_device(request: DeviceRegisterRequest, device_token: str = Depends(
         {"$set": {
             "status": "registered",
             "vin": request.vin,
+            "brand": request.brand,
+            "model": request.model,
+            "year": request.year,
             "updated_at": datetime.datetime.utcnow().isoformat()
         }}
     )
