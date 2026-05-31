@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import uuid
 import datetime
+import re as re_module
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File, BackgroundTasks, Query
 from fastapi.concurrency import run_in_threadpool
@@ -104,7 +105,8 @@ def chat_endpoint(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         
         return ChatResponse(response=answer)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[!] Chat endpoint error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/clear-chat")
@@ -218,11 +220,14 @@ def upload_telemetry(payloads: List[Dict[str, Any]], device_token: str = Depends
     """Receives a batch of telemetry snapshots from the Edge Gateway."""
     if not payloads:
         return {"status": "success", "inserted": 0}
+    if len(payloads) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 snapshots per batch")
     try:
         col_telemetry.insert_many(payloads)
         return {"status": "success", "inserted": len(payloads)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[!] Telemetry endpoint error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/device/register")
 def register_device(request: DeviceRegisterRequest, device_token: str = Depends(verify_device_token)):
@@ -252,7 +257,7 @@ def get_admin_devices(
     if status and status != 'all':
         filter_query["status"] = status
     if search:
-        query = search.strip()
+        query = re_module.escape(search.strip())
         filter_query["$or"] = [
             { "device_token": { "$regex": query, "$options": "i" } },
             { "vin": { "$regex": query, "$options": "i" } },
@@ -285,7 +290,7 @@ def generate_devices(request: GenerateDevicesRequest, api_key: str = Depends(ver
     now = datetime.datetime.utcnow().isoformat()
     
     for _ in range(request.count):
-        token = secrets.token_hex(4).upper()
+        token = secrets.token_hex(16).upper()
         tokens.append(token)
         new_devices.append({
             "device_token": token,
