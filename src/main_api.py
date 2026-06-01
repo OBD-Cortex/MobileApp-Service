@@ -16,9 +16,9 @@ from pydantic import BaseModel
 import secrets
 
 from services.llm_agent import generate_diagnostic
-from core.database import col_chat_history, col_jobs, col_telemetry, col_devices
+from core.database import col_chat_history, col_jobs, col_telemetry, col_devices, col_knowledge
 from core.config import MOBILE_API_KEY
-from services.ingest_service import ingest_pdf, ingest_csv     
+from services.ingest_service import ingest_pdf, ingest_csv, ingest_text     
 
 app = FastAPI(title="OBD-Cortex API")
 
@@ -146,6 +146,8 @@ def process_ingestion_background(job_id: str, temp_path: str, filename: str):
             ingest_pdf(temp_path, filename, job_id=job_id)
         elif filename.endswith(".csv"):
             ingest_csv(temp_path, filename, job_id=job_id)
+        elif filename.endswith(".md") or filename.endswith(".txt"):
+            ingest_text(temp_path, filename, job_id=job_id)
     except Exception as e:
         print(f"[!] Background Ingestion Task Failed for Job {job_id}: {e}")
     finally:
@@ -165,8 +167,8 @@ async def start_ingestion_job(
 ):
     """Receives a manual PDF/CSV file upload and starts background vector ingestion."""
     filename = file.filename
-    if not (filename.endswith(".pdf") or filename.endswith(".csv")):
-        raise HTTPException(status_code=400, detail="Unsupported file format. Only PDF and CSV files are allowed.")
+    if not (filename.endswith(".pdf") or filename.endswith(".csv") or filename.endswith(".md") or filename.endswith(".txt")):
+        raise HTTPException(status_code=400, detail="Unsupported file format. Only PDF, CSV, MD, and TXT files are allowed.")
         
     job_id = str(uuid.uuid4())
     suffix = os.path.splitext(filename)[1]
@@ -235,16 +237,29 @@ def upload_telemetry(payloads: List[Dict[str, Any]], device_token: str = Depends
 @app.post("/api/device/register")
 def register_device(request: DeviceRegisterRequest, device_token: str = Depends(verify_device_token)):
     """Pairs an Edge Gateway to a specific VIN if the token is valid."""
+    now = datetime.datetime.utcnow().isoformat()
+    vehicle_entry = {
+        "vin": request.vin,
+        "brand": request.brand,
+        "model": request.model,
+        "year": request.year,
+        "paired_at": now
+    }
     col_devices.update_one(
         {"device_token": device_token},
-        {"$set": {
-            "status": "registered",
-            "vin": request.vin,
-            "brand": request.brand,
-            "model": request.model,
-            "year": request.year,
-            "updated_at": datetime.datetime.utcnow().isoformat()
-        }}
+        {
+            "$set": {
+                "status": "registered",
+                "vin": request.vin,
+                "brand": request.brand,
+                "model": request.model,
+                "year": request.year,
+                "updated_at": now
+            },
+            "$addToSet": {
+                "vehicles": vehicle_entry
+            }
+        }
     )
     return {"status": "success", "message": "Device registered."}
 
@@ -318,6 +333,31 @@ def delete_device(token: str, api_key: str = Depends(verify_api_key)):
         
     col_devices.delete_one({"device_token": token})
     return {"status": "success"}
+
+@app.get("/api/admin/knowledge")
+def list_knowledge(api_key: str = Depends(verify_api_key)):
+    """Lists all ingested knowledge base documents grouped by source file."""
+    pipeline = [
+        {"$group": {
+            "_id": "$source",
+            "doc_type": {"$first": "$doc_type"},
+            "chunk_count": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    docs = list(col_knowledge.aggregate(pipeline))
+    return {"documents": [
+        {"source": d["_id"], "doc_type": d["doc_type"], "chunks": d["chunk_count"]}
+        for d in docs
+    ]}
+
+@app.delete("/api/admin/knowledge/{source}")
+def delete_knowledge(source: str, api_key: str = Depends(verify_api_key)):
+    """Deletes all chunks for a given source document from the knowledge base."""
+    result = col_knowledge.delete_many({"source": source})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "deleted", "source": source, "chunks_removed": result.deleted_count}
 
 # ==========================================
 # STATIC FILES & NETWORK HELPER

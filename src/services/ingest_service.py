@@ -154,3 +154,62 @@ def ingest_csv(filepath: str, filename: str, job_id: str = None) -> dict:
         err_msg = str(e)
         update_job_status(job_id, "failed", error=err_msg)
         raise e
+
+def ingest_text(filepath: str, filename: str, job_id: str = None) -> dict:
+    """Parses a text/markdown file, chunks it, embeds it, and saves to MongoDB."""
+    try:
+        update_job_status(job_id, "processing", "Checking duplicates...")
+        
+        if col_knowledge.find_one({"source": filename}):
+            msg = f"Skipped: Text file {filename} already indexed in database."
+            update_job_status(job_id, "completed", msg)
+            return {"status": "skipped", "message": msg}
+
+        update_job_status(job_id, "processing", "Reading text data...")
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        
+        upload_count = 0
+        batch_docs = []
+        batch_size = 256
+        total_chunks = len(paragraphs)
+        
+        for index, text in enumerate(paragraphs):
+            batch_docs.append({
+                "text": text,
+                "source": filename,
+                "chunk_number": index + 1,
+                "doc_type": "text_document" 
+            })
+            
+            if len(batch_docs) >= batch_size:
+                processed = index + 1
+                update_job_status(job_id, "processing", f"Vectorizing text chunks ({processed}/{total_chunks})...")
+                texts = [doc["text"] for doc in batch_docs]
+                vectors = embed_model.encode(texts).tolist()
+                
+                for doc, vector in zip(batch_docs, vectors):
+                    doc["embedding"] = vector
+                    
+                col_knowledge.insert_many(batch_docs)
+                upload_count += len(batch_docs)
+                batch_docs = []
+                
+        if batch_docs:
+            update_job_status(job_id, "processing", f"Vectorizing remaining text chunks ({total_chunks}/{total_chunks})...")
+            texts = [doc["text"] for doc in batch_docs]
+            vectors = embed_model.encode(texts).tolist()
+            for doc, vector in zip(batch_docs, vectors): 
+                doc["embedding"] = vector
+            col_knowledge.insert_many(batch_docs)
+            upload_count += len(batch_docs)
+            
+        msg = f"Completed: Successfully indexed {upload_count} chunks."
+        update_job_status(job_id, "completed", msg)
+        return {"status": "success", "message": msg, "count": upload_count}
+    except Exception as e:
+        err_msg = str(e)
+        update_job_status(job_id, "failed", error=err_msg)
+        raise e
