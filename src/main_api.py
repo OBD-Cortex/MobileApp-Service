@@ -245,6 +245,12 @@ def register_device(request: DeviceRegisterRequest, device_token: str = Depends(
         "year": request.year,
         "paired_at": now
     }
+    # Remove any existing entry for this VIN to prevent duplicates (since paired_at changes)
+    col_devices.update_one(
+        {"device_token": device_token},
+        {"$pull": {"vehicles": {"vin": request.vin}}}
+    )
+    
     col_devices.update_one(
         {"device_token": device_token},
         {
@@ -256,7 +262,7 @@ def register_device(request: DeviceRegisterRequest, device_token: str = Depends(
                 "year": request.year,
                 "updated_at": now
             },
-            "$addToSet": {
+            "$push": {
                 "vehicles": vehicle_entry
             }
         }
