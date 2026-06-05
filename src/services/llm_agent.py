@@ -2,11 +2,14 @@ import os
 import requests
 import re
 import time
+import logging
 from core.config import GOOGLE_API_KEY
 from services.retrieval import get_manual_context, get_telemetry_context
 
+logger = logging.getLogger(__name__)
+
 # ==========================================
-# ⚙️ MODEL SELECTION MENU (Verified: May 20, 2026)
+# [*] MODEL SELECTION MENU (Verified: May 20, 2026)
 # ==========================================
 # Instructions: Uncomment ONLY the ONE model you want to use. 
 # If you leave all of them commented out (PREFERRED_MODEL = None), 
@@ -44,7 +47,7 @@ def get_gemini_model() -> str:
     # 1. Use the explicitly selected model from the list above
     if PREFERRED_MODEL:
         _ACTIVE_MODEL = PREFERRED_MODEL
-        print(f"[LLM Agent] Engine Initialized using: {_ACTIVE_MODEL}")
+        logger.info(f"[*] Engine Initialized using: {_ACTIVE_MODEL}")
         return _ACTIVE_MODEL
 
     # 2. Fallback: Auto-Discovery logic if PREFERRED_MODEL = None
@@ -60,18 +63,18 @@ def get_gemini_model() -> str:
         for m in models:
             if 'flash' in m and 'lite' not in m and 'preview' not in m:
                 _ACTIVE_MODEL = m
-                print(f"[LLM Agent] Engine Auto-Discovered: {_ACTIVE_MODEL}")
+                logger.info(f"[*] Engine Auto-Discovered: {_ACTIVE_MODEL}")
                 return _ACTIVE_MODEL
                 
         _ACTIVE_MODEL = models[0] if models else "models/gemini-3.5-flash"
         
     except Exception as e:
         error_str = str(e).replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]") if GOOGLE_API_KEY else str(e)
-        print(f"[!] [LLM Agent] Auto-Discovery failed. Error: {error_str}")
+        logger.error(f"[!] Auto-Discovery failed. Error: {error_str}")
         # Safe 2026 fallback
         _ACTIVE_MODEL = "models/gemini-2.5-flash" 
         
-    print(f"[LLM Agent] Engine Initialized using Fallback: {_ACTIVE_MODEL}")
+    logger.info(f"[*] Engine Initialized using Fallback: {_ACTIVE_MODEL}")
     return _ACTIVE_MODEL
 
 
@@ -125,7 +128,7 @@ def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
             res = requests.post(url, json=payload, headers=headers, timeout=15)
             
             if res.status_code in [429, 500, 503]:
-                print(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
+                logger.warning(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt) 
                     continue
@@ -177,7 +180,7 @@ def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
                 
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
-                print(f"[!] Google API Timeout. Retrying {attempt + 1}/{max_retries}...")
+                logger.warning(f"[!] Google API Timeout. Retrying {attempt + 1}/{max_retries}...")
                 time.sleep(2 ** attempt)
                 continue
             return "Diagnostic Engine Error: The Google API took too long to respond."
@@ -187,7 +190,7 @@ def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
             if GOOGLE_API_KEY and GOOGLE_API_KEY in error_str:
                 error_str = error_str.replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]")
                 
-            print(f"[!] Secure Log - API Request Failed: {error_str}") 
+            logger.error(f"[!] Secure Log - API Request Failed: {error_str}") 
             
             if res is not None and not res.ok and res.status_code not in [429, 500, 503]:
                 return f"Diagnostic Engine Error: Invalid request ({res.status_code}). Check server logs."
@@ -197,3 +200,126 @@ def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
                 continue
                 
             return f"Diagnostic Engine Error: Could not connect to AI services."
+
+
+def generate_multimodal_diagnostic(
+    media_base64: str,
+    mime_type: str,
+    vin: str,
+    chat_history: list
+) -> str:
+    """
+    Processes audio or image media through Gemini's multimodal API to extract
+    a text description of the symptom, then feeds it into the standard
+    diagnostic pipeline for full RAG vector search and telemetry context.
+    """
+    is_audio = mime_type.startswith("audio/")
+    media_label = "audio recording" if is_audio else "image"
+    
+    extraction_prompt = (
+        f"You are an automotive symptom extractor.\n"
+        f"A vehicle owner has provided an {media_label}.\n"
+    )
+    
+    if is_audio:
+        extraction_prompt += "Listen carefully and describe the abnormal engine sounds (knocking, squealing, grinding, etc.). Be very concise.\n"
+    else:
+        extraction_prompt += "Examine the image carefully and describe any visible damage, warning lights, leaks, or anomalies. Be very concise.\n"
+        
+    extraction_prompt += "Return only the extracted symptom description, nothing else."
+
+    # ---------------------------------------------------------
+    # 1. EXTRACT SYMPTOM VIA MULTIMODAL API
+    # ---------------------------------------------------------
+    model_name = get_gemini_model()
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+    
+    payload = {
+        "contents": [{
+            "parts": [
+                {"inlineData": {"mimeType": mime_type, "data": media_base64}},
+                {"text": extraction_prompt}
+            ]
+        }],
+        "generationConfig": {"temperature": 0.2}
+    }
+    headers = {"Content-Type": "application/json"}
+    
+    max_retries = 3
+    extracted_symptom = None
+    
+    for attempt in range(max_retries):
+        res = None
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=30)
+            
+            if res.status_code in [429, 500, 503]:
+                logger.warning(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                    
+            res.raise_for_status()
+            
+            try:
+                data = res.json()
+            except ValueError:
+                return "Diagnostic Engine Error: Received invalid non-JSON response from AI services."
+                
+            candidates = data.get("candidates", [])
+            
+            if not candidates:
+                block_reason = data.get("promptFeedback", {}).get("blockReason")
+                if block_reason:
+                    return f"Diagnostic Engine Error: Content blocked by safety filter ({block_reason})."
+                return "Diagnostic Engine Error: API returned an empty response."
+                
+            candidate = candidates[0]
+            finish_reason = candidate.get("finishReason")
+            
+            if finish_reason and finish_reason not in ["STOP", "MAX_TOKENS"]:
+                return f"Diagnostic Engine Error: Content generation stopped ({finish_reason})."
+                
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+            if not parts or "text" not in parts[0]:
+                return "Diagnostic Engine Error: API returned a response with no text content."
+                
+            extracted_symptom = parts[0]["text"].strip()
+            break
+            
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                logger.warning(f"[!] Google API Timeout (multimodal). Retrying {attempt + 1}/{max_retries}...")
+                time.sleep(2 ** attempt)
+                continue
+            return "Diagnostic Engine Error: The Google API took too long to process the media."
+            
+        except requests.exceptions.RequestException as e:
+            error_str = str(e)
+            if GOOGLE_API_KEY and GOOGLE_API_KEY in error_str:
+                error_str = error_str.replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]")
+                
+            logger.error(f"[!] Secure Log - Multimodal API Request Failed: {error_str}")
+            
+            if res is not None and not res.ok and res.status_code not in [429, 500, 503]:
+                return f"Diagnostic Engine Error: Invalid request ({res.status_code}). Check server logs."
+                
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+                
+            return "Diagnostic Engine Error: Could not connect to AI services."
+
+    if not extracted_symptom:
+        return "Diagnostic Engine Error: Failed to extract symptom from media."
+
+    # ---------------------------------------------------------
+    # 2. PASS TO STANDARD TEXT PIPELINE
+    # ---------------------------------------------------------
+    logger.info(f"[*] Extracted Symptom from Media: {extracted_symptom}")
+    
+    # We append a small note so the text pipeline knows it came from media
+    enhanced_query = f"I observed the following from a {media_label}: {extracted_symptom}"
+    
+    return generate_diagnostic(enhanced_query, chat_history, vin)

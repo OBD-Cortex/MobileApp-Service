@@ -369,7 +369,7 @@
                 const res = await fetch('/api/clear-chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-                    body: JSON.stringify({ vin: vin, query: '' })
+                    body: JSON.stringify({ vin: vin })
                 });
                 if (!res.ok) throw new Error('Failed');
                 

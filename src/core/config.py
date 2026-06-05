@@ -34,3 +34,7 @@ LLAMA_INDEX_API_KEY = os.getenv("LLAMA_INDEX_API_KEY")
 
 # MOBILE_API_KEY: Secure token header used to validate incoming Flutter client requests.
 MOBILE_API_KEY = os.getenv("MOBILE_API_KEY")
+
+# JWT_SECRET: Secret key used for signing JWT authentication tokens.
+JWT_SECRET = os.getenv("JWT_SECRET")
+

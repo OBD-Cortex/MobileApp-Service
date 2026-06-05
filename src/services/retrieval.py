@@ -1,5 +1,8 @@
+import logging
 from core.database import col_knowledge, col_telemetry, col_devices
 from core.models import embed_model
+
+logger = logging.getLogger(__name__)
 
 def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55) -> str:
     """
@@ -58,7 +61,7 @@ def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55
         return "\n".join(formatted_docs)
 
     except Exception as e:
-        print(f"[!] Retrieval Error (Knowledge Base): {e}")
+        logger.error(f"[!] Retrieval Error (Knowledge Base): {e}")
         return "Knowledge Base temporarily offline. Proceeding with general knowledge."
 
 
@@ -83,7 +86,7 @@ def get_telemetry_context(vin: str) -> str:
                 if brand or model or year:
                     metadata_str = f"VEHICLE SPECS: {year or 'Unknown'} {brand or 'Unknown'} {model or 'Unknown'}\n"
         except Exception as e:
-            print(f"[!] Warning: Could not retrieve vehicle metadata: {e}")
+            logger.warning(f"[!] Warning: Could not retrieve vehicle metadata: {e}")
 
         # Fetch the 3 most recent telemetry logs
         logs = list(col_telemetry.find({"vehicle_id": vin}).sort("timestamp", -1).limit(3))
@@ -124,5 +127,5 @@ def get_telemetry_context(vin: str) -> str:
         return context
 
     except Exception as e:
-        print(f"[!] Retrieval Error (Telemetry): {e}")
+        logger.error(f"[!] Retrieval Error (Telemetry): {e}")
         return "Vehicle Telemetry database offline."
