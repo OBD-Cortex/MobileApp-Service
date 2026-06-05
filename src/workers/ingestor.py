@@ -7,7 +7,7 @@ SRC_DIR = os.path.dirname(TOOL_DIR)
 sys.path.insert(0, SRC_DIR)
 
 from core.database import client
-from services.ingest_service import ingest_pdf, ingest_csv
+from services.ingest_service import ingest_pdf, ingest_csv, ingest_text
 
 # ==========================================
 # 1. CONFIGURATION & DIRECTORY CHECK
@@ -60,6 +60,17 @@ for filename in all_files:
             print(f"[>>] Result: {res.get('message')}")
         except Exception as e:
             print(f"[!] Failed to parse CSV {filename}: {e}") 
+
+    # ------------------------------------------
+    # LOGIC C: Process Text/Markdown Files
+    # ------------------------------------------
+    elif filename.endswith(".md") or filename.endswith(".txt"):
+        print(f"\n[•] Processing Text/Markdown: {filename}...")
+        try:
+            res = ingest_text(filepath, filename)
+            print(f"[>>] Result: {res.get('message')}")
+        except Exception as e:
+            print(f"[!] Failed to parse Text/Markdown {filename}: {e}")
 
     else:
         print(f"\n[>>] Skipping {filename} (Unsupported format).")

@@ -78,6 +78,77 @@ def get_gemini_model() -> str:
     return _ACTIVE_MODEL
 
 
+def _call_gemini_api(payload: dict, timeout: int = 15) -> str:
+    """Helper to execute API requests with secure retry logic and response parsing."""
+    model_name = get_gemini_model()
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        res = None
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            
+            if res.status_code in [429, 500, 503]:
+                logger.warning(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt) 
+                    continue
+                    
+            res.raise_for_status() 
+            
+            try:
+                data = res.json()
+            except ValueError:
+                return "Diagnostic Engine Error: Received invalid non-JSON response from AI services."
+                
+            candidates = data.get('candidates', [])
+            
+            if not candidates:
+                block_reason = data.get("promptFeedback", {}).get("blockReason")
+                if block_reason:
+                    return f"Diagnostic Engine Error: Content blocked by safety filter ({block_reason})."
+                return "Diagnostic Engine Error: API returned an empty response."
+                
+            candidate = candidates[0]
+            finish_reason = candidate.get("finishReason")
+            
+            if finish_reason and finish_reason not in ["STOP", "MAX_TOKENS"]:
+                return f"Diagnostic Engine Error: Content generation stopped due to reason ({finish_reason})."
+                
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+            if not parts or "text" not in parts[0]:
+                return "Diagnostic Engine Error: API returned a response with no text content."
+                
+            return parts[0]['text']
+            
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                logger.warning(f"[!] Google API Timeout. Retrying {attempt + 1}/{max_retries}...")
+                time.sleep(2 ** attempt)
+                continue
+            return "Diagnostic Engine Error: The Google API took too long to respond."
+            
+        except requests.exceptions.RequestException as e:
+            error_str = str(e)
+            if GOOGLE_API_KEY and GOOGLE_API_KEY in error_str:
+                error_str = error_str.replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]")
+                
+            logger.error(f"[!] Secure Log - API Request Failed: {error_str}") 
+            
+            if res is not None and not res.ok and res.status_code not in [429, 500, 503]:
+                return f"Diagnostic Engine Error: Invalid request ({res.status_code}). Check server logs."
+                
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+                
+            return "Diagnostic Engine Error: Could not connect to AI services."
+
+
+
 def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     """Combines Retrieval and LLM calling using Chain of Thought reasoning."""
     
@@ -108,98 +179,30 @@ def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     # ---------------------------------------------------------
     # 3. PREPARE THE API REQUEST
     # ---------------------------------------------------------
-    model_name = get_gemini_model()
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
-    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2} 
     }
-    headers = {'Content-Type': 'application/json'}
     
-    # ---------------------------------------------------------
-    # 4. EXECUTE WITH SECURE RETRY LOGIC
-    # ---------------------------------------------------------
-    max_retries = 3
+    raw_text = _call_gemini_api(payload, timeout=15)
     
-    for attempt in range(max_retries):
-        res = None # Initialize to prevent UnboundLocalError on connection failure
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=15)
+    if raw_text.startswith("Diagnostic Engine Error:"):
+        return raw_text
             
-            if res.status_code in [429, 500, 503]:
-                logger.warning(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt) 
-                    continue
-                    
-            res.raise_for_status() 
-            
-            try:
-                data = res.json()
-            except ValueError:
-                return "Diagnostic Engine Error: Received invalid non-JSON response from AI services."
-                
-            candidates = data.get('candidates', [])
-            
-            if not candidates:
-                # Check for blockReason if safety filter blocked the content
-                block_reason = data.get("promptFeedback", {}).get("blockReason")
-                if block_reason:
-                    return f"Diagnostic Engine Error: Content blocked by safety filter ({block_reason})."
-                return "Diagnostic Engine Error: API returned an empty response."
-                
-            candidate = candidates[0]
-            finish_reason = candidate.get("finishReason")
-            
-            # If the generation finished due to safety blocking or similar issues
-            if finish_reason and finish_reason not in ["STOP", "MAX_TOKENS"]:
-                return f"Diagnostic Engine Error: Content generation stopped due to reason ({finish_reason})."
-                
-            content = candidate.get("content", {})
-            parts = content.get("parts", [])
-            if not parts or "text" not in parts[0]:
-                return "Diagnostic Engine Error: API returned a response with no text content."
-                
-            raw_text = parts[0]['text']
-            
-            # ---------------------------------------------------------
-            # 5. PARSE OUTPUT
-            # ---------------------------------------------------------
-            response_match = re.search(r'<response>(.*?)</response>', raw_text, re.DOTALL | re.IGNORECASE)
-            
-            if response_match:
-                return response_match.group(1).strip()
-            
-            # Fallback: if <response> exists but closing tag </response> is missing (e.g., token limit cutoff)
-            response_start = re.search(r'<response>(.*)', raw_text, re.DOTALL | re.IGNORECASE)
-            if response_start:
-                return response_start.group(1).strip()
-            else:
-                return re.sub(r'<analysis>.*?</analysis>', '', raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
-                
-        except requests.exceptions.Timeout:
-            if attempt < max_retries - 1:
-                logger.warning(f"[!] Google API Timeout. Retrying {attempt + 1}/{max_retries}...")
-                time.sleep(2 ** attempt)
-                continue
-            return "Diagnostic Engine Error: The Google API took too long to respond."
-            
-        except requests.exceptions.RequestException as e:
-            error_str = str(e)
-            if GOOGLE_API_KEY and GOOGLE_API_KEY in error_str:
-                error_str = error_str.replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]")
-                
-            logger.error(f"[!] Secure Log - API Request Failed: {error_str}") 
-            
-            if res is not None and not res.ok and res.status_code not in [429, 500, 503]:
-                return f"Diagnostic Engine Error: Invalid request ({res.status_code}). Check server logs."
-                
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-                
-            return f"Diagnostic Engine Error: Could not connect to AI services."
+    # ---------------------------------------------------------
+    # 4. PARSE OUTPUT
+    # ---------------------------------------------------------
+    response_match = re.search(r'<response>(.*?)</response>', raw_text, re.DOTALL | re.IGNORECASE)
+    
+    if response_match:
+        return response_match.group(1).strip()
+    
+    # Fallback: if <response> exists but closing tag </response> is missing
+    response_start = re.search(r'<response>(.*)', raw_text, re.DOTALL | re.IGNORECASE)
+    if response_start:
+        return response_start.group(1).strip()
+    else:
+        return re.sub(r'<analysis>.*?</analysis>', '', raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
 
 
 def generate_multimodal_diagnostic(
@@ -231,9 +234,6 @@ def generate_multimodal_diagnostic(
     # ---------------------------------------------------------
     # 1. EXTRACT SYMPTOM VIA MULTIMODAL API
     # ---------------------------------------------------------
-    model_name = get_gemini_model()
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
-    
     payload = {
         "contents": [{
             "parts": [
@@ -243,76 +243,13 @@ def generate_multimodal_diagnostic(
         }],
         "generationConfig": {"temperature": 0.2}
     }
-    headers = {"Content-Type": "application/json"}
     
-    max_retries = 3
-    extracted_symptom = None
+    extracted_symptom = _call_gemini_api(payload, timeout=30)
     
-    for attempt in range(max_retries):
-        res = None
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=30)
-            
-            if res.status_code in [429, 500, 503]:
-                logger.warning(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                    
-            res.raise_for_status()
-            
-            try:
-                data = res.json()
-            except ValueError:
-                return "Diagnostic Engine Error: Received invalid non-JSON response from AI services."
-                
-            candidates = data.get("candidates", [])
-            
-            if not candidates:
-                block_reason = data.get("promptFeedback", {}).get("blockReason")
-                if block_reason:
-                    return f"Diagnostic Engine Error: Content blocked by safety filter ({block_reason})."
-                return "Diagnostic Engine Error: API returned an empty response."
-                
-            candidate = candidates[0]
-            finish_reason = candidate.get("finishReason")
-            
-            if finish_reason and finish_reason not in ["STOP", "MAX_TOKENS"]:
-                return f"Diagnostic Engine Error: Content generation stopped ({finish_reason})."
-                
-            content = candidate.get("content", {})
-            parts = content.get("parts", [])
-            if not parts or "text" not in parts[0]:
-                return "Diagnostic Engine Error: API returned a response with no text content."
-                
-            extracted_symptom = parts[0]["text"].strip()
-            break
-            
-        except requests.exceptions.Timeout:
-            if attempt < max_retries - 1:
-                logger.warning(f"[!] Google API Timeout (multimodal). Retrying {attempt + 1}/{max_retries}...")
-                time.sleep(2 ** attempt)
-                continue
-            return "Diagnostic Engine Error: The Google API took too long to process the media."
-            
-        except requests.exceptions.RequestException as e:
-            error_str = str(e)
-            if GOOGLE_API_KEY and GOOGLE_API_KEY in error_str:
-                error_str = error_str.replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]")
-                
-            logger.error(f"[!] Secure Log - Multimodal API Request Failed: {error_str}")
-            
-            if res is not None and not res.ok and res.status_code not in [429, 500, 503]:
-                return f"Diagnostic Engine Error: Invalid request ({res.status_code}). Check server logs."
-                
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-                
-            return "Diagnostic Engine Error: Could not connect to AI services."
-
-    if not extracted_symptom:
-        return "Diagnostic Engine Error: Failed to extract symptom from media."
+    if extracted_symptom.startswith("Diagnostic Engine Error:"):
+        return extracted_symptom
+    
+    extracted_symptom = extracted_symptom.strip()
 
     # ---------------------------------------------------------
     # 2. PASS TO STANDARD TEXT PIPELINE

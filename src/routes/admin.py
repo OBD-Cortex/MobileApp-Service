@@ -14,7 +14,7 @@ class GenerateDevicesRequest(BaseModel):
     count: int
 
 @router.get("/devices")
-def get_admin_devices(
+async def get_admin_devices(
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     api_key: str = Depends(verify_api_key)
@@ -28,17 +28,17 @@ def get_admin_devices(
             { "device_token": { "$regex": query, "$options": "i" } },
             { "vin": { "$regex": query, "$options": "i" } },
         ]
-    devices = list(col_devices.find(filter_query).sort("created_at", -1).limit(200))
+    devices = await col_devices.find(filter_query).sort("created_at", -1).limit(200).to_list(length=None)
     for d in devices:
         d["_id"] = str(d["_id"])
     return {"devices": devices, "count": len(devices)}
 
 @router.get("/stats")
-def get_admin_stats(api_key: str = Depends(verify_api_key)):
-    total = col_devices.count_documents({})
-    manufactured = col_devices.count_documents({"status": "manufactured"})
-    registered = col_devices.count_documents({"status": "registered"})
-    paired = col_devices.count_documents({"status": "paired"})
+async def get_admin_stats(api_key: str = Depends(verify_api_key)):
+    total = await col_devices.count_documents({})
+    manufactured = await col_devices.count_documents({"status": "manufactured"})
+    registered = await col_devices.count_documents({"status": "registered"})
+    paired = await col_devices.count_documents({"status": "paired"})
     return {
         "total": total,
         "manufactured": manufactured,
@@ -47,7 +47,7 @@ def get_admin_stats(api_key: str = Depends(verify_api_key)):
     }
 
 @router.post("/devices/generate")
-def generate_devices(request: GenerateDevicesRequest, api_key: str = Depends(verify_api_key)):
+async def generate_devices(request: GenerateDevicesRequest, api_key: str = Depends(verify_api_key)):
     if request.count < 1 or request.count > 100:
         raise HTTPException(status_code=400, detail="Count must be between 1 and 100")
         
@@ -65,17 +65,17 @@ def generate_devices(request: GenerateDevicesRequest, api_key: str = Depends(ver
             "updated_at": now
         })
         
-    col_devices.insert_many(new_devices)
+    await col_devices.insert_many(new_devices)
     return {"status": "success", "generated": request.count, "tokens": tokens}
 
 @router.delete("/devices/{token}")
-def delete_device(
+async def delete_device(
     token: str,
     force: bool = Query(False),
     api_key: str = Depends(verify_api_key)
 ):
     normalized_token = token.strip().upper()
-    device = col_devices.find_one({"device_token": normalized_token})
+    device = await col_devices.find_one({"device_token": normalized_token})
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
@@ -91,7 +91,7 @@ def delete_device(
     # If forced and paired, clean up the linked user document
     if is_paired and force and owner_id:
         now = datetime.datetime.utcnow().isoformat()
-        col_users.update_one(
+        await col_users.update_one(
             {"user_id": owner_id},
             {
                 "$unset": {"device_token": ""},
@@ -99,14 +99,14 @@ def delete_device(
             }
         )
         
-    col_devices.delete_one({"device_token": normalized_token})
+    await col_devices.delete_one({"device_token": normalized_token})
     return {"status": "success"}
 
 @router.post("/devices/{token}/unpair")
-def admin_unpair_device(token: str, api_key: str = Depends(verify_api_key)):
+async def admin_unpair_device(token: str, api_key: str = Depends(verify_api_key)):
     """Force unpairs a device from its owner (administrative action)."""
     normalized_token = token.strip().upper()
-    device = col_devices.find_one({"device_token": normalized_token})
+    device = await col_devices.find_one({"device_token": normalized_token})
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
         
@@ -114,7 +114,7 @@ def admin_unpair_device(token: str, api_key: str = Depends(verify_api_key)):
     now = datetime.datetime.utcnow().isoformat()
     
     # 1. Unset owner_id and reset status on device
-    col_devices.update_one(
+    await col_devices.update_one(
         {"device_token": normalized_token},
         {
             "$set": {
@@ -127,7 +127,7 @@ def admin_unpair_device(token: str, api_key: str = Depends(verify_api_key)):
     
     # 2. Update user document to remove device link
     if owner_id:
-        col_users.update_one(
+        await col_users.update_one(
             {"user_id": owner_id},
             {
                 "$unset": {"device_token": ""},
@@ -138,7 +138,7 @@ def admin_unpair_device(token: str, api_key: str = Depends(verify_api_key)):
     return {"status": "success", "message": "Device successfully unpaired from its owner."}
 
 @router.get("/knowledge")
-def list_knowledge(api_key: str = Depends(verify_api_key)):
+async def list_knowledge(api_key: str = Depends(verify_api_key)):
     """Lists all ingested knowledge base documents grouped by source file."""
     pipeline = [
         {"$group": {
@@ -148,16 +148,16 @@ def list_knowledge(api_key: str = Depends(verify_api_key)):
         }},
         {"$sort": {"_id": 1}}
     ]
-    docs = list(col_knowledge.aggregate(pipeline))
+    docs = await col_knowledge.aggregate(pipeline).to_list(length=None)
     return {"documents": [
         {"source": d["_id"], "doc_type": d["doc_type"], "chunks": d["chunk_count"]}
         for d in docs
     ]}
 
 @router.delete("/knowledge/{source}")
-def delete_knowledge(source: str, api_key: str = Depends(verify_api_key)):
+async def delete_knowledge(source: str, api_key: str = Depends(verify_api_key)):
     """Deletes all chunks for a given source document from the knowledge base."""
-    result = col_knowledge.delete_many({"source": source})
+    result = await col_knowledge.delete_many({"source": source})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"status": "deleted", "source": source, "chunks_removed": result.deleted_count}

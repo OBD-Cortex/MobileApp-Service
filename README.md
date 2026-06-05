@@ -44,8 +44,14 @@ python Testing/test_retrieve.py
 
 ## [*] Architectural & Modular Enhancements
 
-To align with high production standards and modular robustness, several core improvements were implemented:
+To align with high production standards and modular robustness according to `AGENTS.md`, several core improvements were implemented:
 1. **Case-Insensitive Device Token Verification**: Normalized device tokens to uppercase across verification, mobile signup, and admin routes to prevent registration/unpairing mismatches.
-2. **Dynamic Configuration Fixes**: Configured standard loading of `JWT_SECRET` inside `config.py` to prevent import failures.
+2. **Environment Injection (Security)**: Removed local `python-dotenv` reading to strictly adhere to security constraints. All environment variables are natively injected by the OS or Docker host.
 3. **Database Date Parsing**: The telemetry edge gateway API parses incoming ISO-8601 string timestamps into native Python datetime objects before insertion, guaranteeing BSON Date integrity in MongoDB.
+4. **LLM Engine Refactoring**: Abstracted over 150 lines of duplicate API retry, rate-limiting, and Google Gemini execution logic into a clean, single-function functional pipeline.
+5. **Chat History Protection (API Error Safety Guard)**: Added checks in mobile and legacy chat endpoints to detect LLM API failures (prefixed with `Diagnostic Engine Error:`) and raise a `502 Bad Gateway` HTTP error rather than persisting them in the chat history.
+6. **Unique Device Provisioning**: Implemented a retry verification loop for candidate edge device IDs in the registration pathway to ensure device ID collisions do not occur in production.
+7. **Database Index Verification**: Added programmatic setup of unique indexes for `device_token` and `device_id` on the devices collection, preventing duplication at the BSON layer.
+8. **Bulk Ingestor File Type Alignment**: Added native processing of `.md` and `.txt` files to the bulk vectorization worker (`ingestor.py`) to align with the RAG manual ingestion API capabilities.
+9. **Account Deletion Database Integrity**: Upgraded the account deletion flow to read bindings directly from the MongoDB user document rather than trust incoming JWT claims, ensuring clean device unpairing and data scrubbing.
 

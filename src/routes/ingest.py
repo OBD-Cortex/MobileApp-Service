@@ -15,15 +15,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingest", tags=["Ingestion"])
 
-def process_ingestion_background(job_id: str, temp_path: str, filename: str):
+async def process_ingestion_background(job_id: str, temp_path: str, filename: str):
     """Worker task that runs the ingestion service in a background thread."""
     try:
         if filename.endswith(".pdf"):
-            ingest_pdf(temp_path, filename, job_id=job_id)
+            await ingest_pdf(temp_path, filename, job_id=job_id)
         elif filename.endswith(".csv"):
-            ingest_csv(temp_path, filename, job_id=job_id)
+            await ingest_csv(temp_path, filename, job_id=job_id)
         elif filename.endswith(".md") or filename.endswith(".txt"):
-            ingest_text(temp_path, filename, job_id=job_id)
+            await ingest_text(temp_path, filename, job_id=job_id)
     except Exception as e:
         logger.error(f"[!] Background Ingestion Task Failed for Job {job_id}: {e}")
     finally:
@@ -48,6 +48,10 @@ async def start_ingestion_job(
     job_id = str(uuid.uuid4())
     suffix = os.path.splitext(filename)[1]
     
+    # SECURITY: Prevent disk exhaustion using native UploadFile.size check
+    if getattr(file, "size", 0) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
+
     # Save the upload stream to a secure temporary file
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
@@ -66,7 +70,7 @@ async def start_ingestion_job(
         "created_at": datetime.datetime.utcnow(),
         "updated_at": datetime.datetime.utcnow()
     }
-    col_jobs.insert_one(job_doc)
+    await col_jobs.insert_one(job_doc)
     
     # Enqueue background processing task
     background_tasks.add_task(process_ingestion_background, job_id, temp_path, filename)
@@ -74,9 +78,9 @@ async def start_ingestion_job(
     return {"job_id": job_id, "status": "queued"}
 
 @router.get("/status/{job_id}")
-def get_ingestion_status(job_id: str, api_key: str = Depends(verify_api_key)):
+async def get_ingestion_status(job_id: str, api_key: str = Depends(verify_api_key)):
     """Retrieves the current execution status and logs for a background ingestion job."""
-    job_doc = col_jobs.find_one({"_id": job_id})
+    job_doc = await col_jobs.find_one({"_id": job_id})
     if not job_doc:
         raise HTTPException(status_code=404, detail="Job ID not found or already expired.")
         

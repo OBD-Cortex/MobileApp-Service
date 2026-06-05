@@ -6,18 +6,16 @@ and production execution on DigitalOcean Droplets.
 """
 
 import os
-from dotenv import load_dotenv
 
 # -------------------------------------------------------------
 # 1. ENVIRONMENT CONFIGURATION FILE LOADER
 # -------------------------------------------------------------
-# During local development, developers can specify a custom configuration file 
-# path (via the ENV_PATH environment variable) to load parameters.
-# In production deployments, this loader is bypassed, and variables are read
-# directly from OS environment variables (systemd/Docker configuration).
-env_path = os.getenv("ENV_PATH")
-if env_path and os.path.exists(env_path):
-    load_dotenv(dotenv_path=env_path)
+# During local development, developers must rely on the environment variables
+# injected by the test runner or IDE.
+# In production deployments, variables are read directly from OS environment 
+# variables (systemd/Docker configuration).
+#
+# AGENTS.md Rule Applied: Removed local dotenv loading for security.
 
 
 # -------------------------------------------------------------
@@ -36,5 +34,11 @@ LLAMA_INDEX_API_KEY = os.getenv("LLAMA_INDEX_API_KEY")
 MOBILE_API_KEY = os.getenv("MOBILE_API_KEY")
 
 # JWT_SECRET: Secret key used for signing JWT authentication tokens.
+# SECURITY: Must be >= 32 characters in production.
 JWT_SECRET = os.getenv("JWT_SECRET")
+
+# CORS_ORIGINS: Comma-separated list of allowed CORS origins.
+# SECURITY: Must be explicitly set in production. Do NOT use "*".
+# Example: "https://admin.example.com,https://app.example.com"
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "")
 

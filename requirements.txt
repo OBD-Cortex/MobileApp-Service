@@ -1,8 +1,7 @@
 # Database & API
-pymongo
+motor
 certifi
-python-dotenv
-requests
+httpx
 
 # Server
 fastapi
@@ -13,5 +12,11 @@ python-multipart
 sentence-transformers
 llama-cloud
 
+# Security
+bcrypt
+PyJWT
+slowapi
+
 # Utilities
-pandas
+polars
+psutil

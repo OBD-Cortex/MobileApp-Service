@@ -5,7 +5,7 @@ collection handles for the entire application to import.
 """
 
 import sys
-import pymongo
+from motor.motor_asyncio import AsyncIOMotorClient
 import certifi
 import logging
 from core.config import MONGO_URI
@@ -28,16 +28,11 @@ _CLIENT_OPTIONS = {
     "retryReads": True,                 # Auto-retry reads on transient network failures
 }
 
-logger.info("[*] Initializing MongoDB Connection...")
+logger.info("[*] Initializing Async MongoDB Connection...")
 
 try:
-    client = pymongo.MongoClient(MONGO_URI, **_CLIENT_OPTIONS)
-
-    # Verify: DNS resolved, TCP connected, TLS passed, credentials accepted.
-    client.admin.command("ping")
-
+    client = AsyncIOMotorClient(MONGO_URI, **_CLIENT_OPTIONS)
 except Exception as e:
-    # Sanitize error output to prevent credential leakage in terminal/log files.
     error_msg = str(e)
     if MONGO_URI:
         error_msg = error_msg.replace(MONGO_URI, "[REDACTED_URI]")
@@ -60,62 +55,87 @@ col_jobs = db["ingestion_jobs"]             # Temporary status logs for async ma
 col_users = db["users"]                     # Mobile app user accounts
 col_media = db["media"]                     # Audio/image uploads from mobile app
 
-# Create index on telemetry collection for faster retrieval
-try:
-    col_telemetry.create_index([("vehicle_id", 1), ("timestamp", -1)])
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create index on col_telemetry: {e}")
-
-# Create unique index on chat history for fast per-VIN session lookups
-try:
-    col_chat_history.create_index("vin", unique=True)
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create index on col_chat_history: {e}")
-
-# Create TTL index on ingestion jobs to auto-delete documents after 24 hours (86400 seconds)
-try:
-    col_jobs.create_index("created_at", expireAfterSeconds=86400)
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create TTL index on col_jobs: {e}")
-
-# Create unique username index for mobile app user accounts
-try:
-    col_users.create_index("username", unique=True)
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create index on col_users.username: {e}")
-
-# Enforce 1 user per device token (partial: indexes only string values to avoid null uniqueness conflict)
-try:
+async def init_db():
+    """Asynchronously initialize database indexes and verify connection."""
     try:
-        col_users.drop_index("device_token_1")
-    except Exception:
-        pass
-    col_users.create_index(
-        "device_token",
-        unique=True,
-        partialFilterExpression={"device_token": {"$type": "string"}}
-    )
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create index on col_users.device_token: {e}")
+        await client.admin.command("ping")
+        logger.info("[✓] Database Connected and Pinged Successfully.")
+    except Exception as e:
+        logger.error(f"[!] Database Ping Failed: {e}")
+        sys.exit(1)
 
-# Enforce 1 owner per device (partial: indexes only string values to avoid null uniqueness conflict)
-try:
+    # Create index on telemetry collection for faster retrieval
     try:
-        col_devices.drop_index("owner_id_1")
-    except Exception:
-        pass
-    col_devices.create_index(
-        "owner_id",
-        unique=True,
-        partialFilterExpression={"owner_id": {"$type": "string"}}
-    )
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create index on col_devices.owner_id: {e}")
+        await col_telemetry.create_index([("vehicle_id", 1), ("timestamp", -1)])
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create index on col_telemetry: {e}")
 
-# Media retrieval by user, sorted by most recent
-try:
-    col_media.create_index([("user_id", 1), ("created_at", -1)])
-except Exception as e:
-    logger.warning(f"[!] Warning: Could not create index on col_media: {e}")
+    # Create unique index on chat history for fast per-VIN session lookups
+    try:
+        await col_chat_history.create_index("vin", unique=True)
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create index on col_chat_history: {e}")
 
-logger.info("[✓] Database Connected.")
+    # Create TTL index on ingestion jobs to auto-delete documents after 24 hours (86400 seconds)
+    try:
+        await col_jobs.create_index("created_at", expireAfterSeconds=86400)
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create TTL index on col_jobs: {e}")
+
+    # Create unique username index for mobile app user accounts
+    try:
+        await col_users.create_index("username", unique=True)
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create index on col_users.username: {e}")
+
+    # Enforce 1 user per device token (partial: indexes only string values to avoid null uniqueness conflict)
+    try:
+        try:
+            await col_users.drop_index("device_token_1")
+        except Exception:
+            pass
+        await col_users.create_index(
+            "device_token",
+            unique=True,
+            partialFilterExpression={"device_token": {"$type": "string"}}
+        )
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create index on col_users.device_token: {e}")
+
+    # Enforce 1 owner per device (partial: indexes only string values to avoid null uniqueness conflict)
+    try:
+        try:
+            await col_devices.drop_index("owner_id_1")
+        except Exception:
+            pass
+        await col_devices.create_index(
+            "owner_id",
+            unique=True,
+            partialFilterExpression={"owner_id": {"$type": "string"}}
+        )
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create index on col_devices.owner_id: {e}")
+
+    # Create unique index on device_token in col_devices
+    try:
+        await col_devices.create_index("device_token", unique=True)
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create unique index on col_devices.device_token: {e}")
+
+    # Create unique index on device_id in col_devices (partial: indexes only exists values to avoid null uniqueness conflict)
+    try:
+        await col_devices.create_index(
+            "device_id",
+            unique=True,
+            partialFilterExpression={"device_id": {"$exists": True}}
+        )
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create unique index on col_devices.device_id: {e}")
+
+    # Media retrieval by user, sorted by most recent
+    try:
+        await col_media.create_index([("user_id", 1), ("created_at", -1)])
+    except Exception as e:
+        logger.warning(f"[!] Warning: Could not create index on col_media: {e}")
+
+    logger.info("[✓] Database Indexes Verified.")

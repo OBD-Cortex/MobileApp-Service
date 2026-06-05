@@ -1,14 +1,14 @@
 import os
 import sys
 import datetime
-import pandas as pd
+import polars as pl
 from llama_cloud import LlamaCloud
 
 from core.config import LLAMA_INDEX_API_KEY
 from core.database import col_knowledge, col_jobs
 from core.models import embed_model
 
-def update_job_status(job_id: str, status: str, progress: str = None, error: str = None):
+async def update_job_status(job_id: str, status: str, progress: str = None, error: str = None):
     """Updates the status of a background ingestion job in MongoDB."""
     if not job_id:
         return
@@ -21,21 +21,21 @@ def update_job_status(job_id: str, status: str, progress: str = None, error: str
     if error is not None:
         update_data["error_message"] = error
         
-    col_jobs.update_one({"_id": job_id}, {"$set": update_data})
+    await col_jobs.update_one({"_id": job_id}, {"$set": update_data})
 
-def ingest_pdf(filepath: str, filename: str, job_id: str = None) -> dict:
+async def ingest_pdf(filepath: str, filename: str, job_id: str = None) -> dict:
     """Parses a PDF manual using LlamaCloud, embeds pages, and saves to MongoDB."""
     try:
-        update_job_status(job_id, "processing", "Checking duplicates...")
+        await update_job_status(job_id, "processing", "Checking duplicates...")
         
         # 0. Deduplicate: Check if already indexed in local MongoDB
-        if col_knowledge.find_one({"source": filename}):
+        if await col_knowledge.find_one({"source": filename}):
             msg = f"Skipped: PDF {filename} already indexed in database."
-            update_job_status(job_id, "completed", msg)
+            await update_job_status(job_id, "completed", msg)
             return {"status": "skipped", "message": msg}
 
         # 1. Deduplicate: Check if file already exists on LlamaCloud
-        update_job_status(job_id, "processing", "Connecting to LlamaCloud...")
+        await update_job_status(job_id, "processing", "Connecting to LlamaCloud...")
         
         if not LLAMA_INDEX_API_KEY:
             raise ValueError("LLAMA_INDEX_API_KEY environment variable is not configured.")
@@ -52,10 +52,10 @@ def ingest_pdf(filepath: str, filename: str, job_id: str = None) -> dict:
                 break
 
         if not file_obj:
-            update_job_status(job_id, "processing", "Uploading PDF to LlamaCloud...")
+            await update_job_status(job_id, "processing", "Uploading PDF to LlamaCloud...")
             file_obj = llama_client.files.create(file=filepath, purpose="parse")
         
-        update_job_status(job_id, "processing", "LlamaCloud parsing PDF (this can take 1-2 minutes)...")
+        await update_job_status(job_id, "processing", "LlamaCloud parsing PDF (this can take 1-2 minutes)...")
         result = llama_client.parsing.parse(
             file_id=file_obj.id, tier="agentic", version="latest", expand=["markdown"]
         )
@@ -64,7 +64,7 @@ def ingest_pdf(filepath: str, filename: str, job_id: str = None) -> dict:
         batch_docs = []
         
         # Step 1: Gather plain text documents from pages
-        update_job_status(job_id, "processing", "Extracting parsed pages...")
+        await update_job_status(job_id, "processing", "Extracting parsed pages...")
         for i, page in enumerate(result.markdown.pages):
             text_content = page.markdown
             if not text_content or not text_content.strip(): 
@@ -79,44 +79,44 @@ def ingest_pdf(filepath: str, filename: str, job_id: str = None) -> dict:
 
         # Step 2: Batch Encode and Bulk Insert
         if batch_docs:
-            update_job_status(job_id, "processing", f"Vectorizing {len(batch_docs)} pages (generating 640D embeddings)...")
+            await update_job_status(job_id, "processing", f"Vectorizing {len(batch_docs)} pages (generating 640D embeddings)...")
             texts = [doc["text"] for doc in batch_docs]
             vectors = embed_model.encode(texts).tolist() 
             
             for doc, vector in zip(batch_docs, vectors):
                 doc["embedding"] = vector
                 
-            col_knowledge.insert_many(batch_docs)
+            await col_knowledge.insert_many(batch_docs)
             upload_count += len(batch_docs)
 
         msg = f"Completed: Successfully indexed {upload_count} pages."
-        update_job_status(job_id, "completed", msg)
+        await update_job_status(job_id, "completed", msg)
         return {"status": "success", "message": msg, "count": upload_count}
     except Exception as e:
         err_msg = str(e)
-        update_job_status(job_id, "failed", error=err_msg)
+        await update_job_status(job_id, "failed", error=err_msg)
         raise e
 
-def ingest_csv(filepath: str, filename: str, job_id: str = None) -> dict:
+async def ingest_csv(filepath: str, filename: str, job_id: str = None) -> dict:
     """Parses a CSV database using Pandas, embeds rows in batches, and saves to MongoDB."""
     try:
-        update_job_status(job_id, "processing", "Checking duplicates...")
+        await update_job_status(job_id, "processing", "Checking duplicates...")
         
         # 0. Deduplicate: Check if already indexed in local MongoDB
-        if col_knowledge.find_one({"source": filename}):
+        if await col_knowledge.find_one({"source": filename}):
             msg = f"Skipped: CSV {filename} already indexed in database."
-            update_job_status(job_id, "completed", msg)
+            await update_job_status(job_id, "completed", msg)
             return {"status": "skipped", "message": msg}
 
-        update_job_status(job_id, "processing", "Reading CSV data...")
-        df = pd.read_csv(filepath).fillna("") 
+        await update_job_status(job_id, "processing", "Reading CSV data...")
+        df = pl.read_csv(filepath, null_values=[""]).fill_null("") 
         
         upload_count = 0
         batch_docs = []
         batch_size = 256
         total_rows = len(df)
         
-        for index, row in df.iterrows():
+        for index, row in enumerate(df.iter_rows(named=True)):
             row_text = ", ".join([f"{col}: {val}" for col, val in row.items() if val != ""])
             batch_docs.append({
                 "text": row_text,
@@ -127,45 +127,45 @@ def ingest_csv(filepath: str, filename: str, job_id: str = None) -> dict:
             
             if len(batch_docs) >= batch_size:
                 processed = index + 1
-                update_job_status(job_id, "processing", f"Vectorizing CSV rows ({processed}/{total_rows})...")
+                await update_job_status(job_id, "processing", f"Vectorizing CSV rows ({processed}/{total_rows})...")
                 texts = [doc["text"] for doc in batch_docs]
                 vectors = embed_model.encode(texts).tolist()
                 
                 for doc, vector in zip(batch_docs, vectors):
                     doc["embedding"] = vector
                     
-                col_knowledge.insert_many(batch_docs)
+                await col_knowledge.insert_many(batch_docs)
                 upload_count += len(batch_docs)
                 batch_docs = []
                 
         if batch_docs:
-            update_job_status(job_id, "processing", f"Vectorizing remaining CSV rows ({total_rows}/{total_rows})...")
+            await update_job_status(job_id, "processing", f"Vectorizing remaining CSV rows ({total_rows}/{total_rows})...")
             texts = [doc["text"] for doc in batch_docs]
             vectors = embed_model.encode(texts).tolist()
             for doc, vector in zip(batch_docs, vectors): 
                 doc["embedding"] = vector
-            col_knowledge.insert_many(batch_docs)
+            await col_knowledge.insert_many(batch_docs)
             upload_count += len(batch_docs)
             
         msg = f"Completed: Successfully indexed {upload_count} rows."
-        update_job_status(job_id, "completed", msg)
+        await update_job_status(job_id, "completed", msg)
         return {"status": "success", "message": msg, "count": upload_count}
     except Exception as e:
         err_msg = str(e)
-        update_job_status(job_id, "failed", error=err_msg)
+        await update_job_status(job_id, "failed", error=err_msg)
         raise e
 
-def ingest_text(filepath: str, filename: str, job_id: str = None) -> dict:
+async def ingest_text(filepath: str, filename: str, job_id: str = None) -> dict:
     """Parses a text/markdown file, chunks it, embeds it, and saves to MongoDB."""
     try:
-        update_job_status(job_id, "processing", "Checking duplicates...")
+        await update_job_status(job_id, "processing", "Checking duplicates...")
         
-        if col_knowledge.find_one({"source": filename}):
+        if await col_knowledge.find_one({"source": filename}):
             msg = f"Skipped: Text file {filename} already indexed in database."
-            update_job_status(job_id, "completed", msg)
+            await update_job_status(job_id, "completed", msg)
             return {"status": "skipped", "message": msg}
 
-        update_job_status(job_id, "processing", "Reading text data...")
+        await update_job_status(job_id, "processing", "Reading text data...")
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
             
@@ -186,30 +186,30 @@ def ingest_text(filepath: str, filename: str, job_id: str = None) -> dict:
             
             if len(batch_docs) >= batch_size:
                 processed = index + 1
-                update_job_status(job_id, "processing", f"Vectorizing text chunks ({processed}/{total_chunks})...")
+                await update_job_status(job_id, "processing", f"Vectorizing text chunks ({processed}/{total_chunks})...")
                 texts = [doc["text"] for doc in batch_docs]
                 vectors = embed_model.encode(texts).tolist()
                 
                 for doc, vector in zip(batch_docs, vectors):
                     doc["embedding"] = vector
                     
-                col_knowledge.insert_many(batch_docs)
+                await col_knowledge.insert_many(batch_docs)
                 upload_count += len(batch_docs)
                 batch_docs = []
                 
         if batch_docs:
-            update_job_status(job_id, "processing", f"Vectorizing remaining text chunks ({total_chunks}/{total_chunks})...")
+            await update_job_status(job_id, "processing", f"Vectorizing remaining text chunks ({total_chunks}/{total_chunks})...")
             texts = [doc["text"] for doc in batch_docs]
             vectors = embed_model.encode(texts).tolist()
             for doc, vector in zip(batch_docs, vectors): 
                 doc["embedding"] = vector
-            col_knowledge.insert_many(batch_docs)
+            await col_knowledge.insert_many(batch_docs)
             upload_count += len(batch_docs)
             
         msg = f"Completed: Successfully indexed {upload_count} chunks."
-        update_job_status(job_id, "completed", msg)
+        await update_job_status(job_id, "completed", msg)
         return {"status": "success", "message": msg, "count": upload_count}
     except Exception as e:
         err_msg = str(e)
-        update_job_status(job_id, "failed", error=err_msg)
+        await update_job_status(job_id, "failed", error=err_msg)
         raise e

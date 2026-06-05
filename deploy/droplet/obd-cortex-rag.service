@@ -1,0 +1,47 @@
+[Unit]
+Description=OBD-Cortex RAG FastAPI Backend
+After=network.target
+
+[Service]
+# Service execution
+# Binds to 127.0.0.1 (behind Nginx), enables proxy headers
+ExecStart=/home/obd/obd-cortex/obd-venv/bin/uvicorn main_api:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips='127.0.0.1'
+
+# Dedicated non-root user
+User=obd
+Group=obd
+
+# Working directory and environment
+WorkingDirectory=/home/obd/obd-cortex/src
+EnvironmentFile=/home/obd/obd-cortex/.env
+
+# Restart behavior
+Restart=on-failure
+RestartSec=5
+
+# ----------------------------------------------------------
+# SECURITY HARDENING DIRECTIVES
+# ----------------------------------------------------------
+# Prevent privilege escalation
+NoNewPrivileges=true
+
+# Make the entire filesystem read-only by default
+ProtectSystem=strict
+
+# Make /home read-only, except for allowed paths
+ProtectHome=read-only
+
+# Provide a private /tmp
+PrivateTmp=true
+
+# Whitelist paths the application needs to write to (if any)
+# Note: Adjust if your app needs to write to specific directories (e.g., uploads)
+ReadWritePaths=/home/obd/obd-cortex
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=obd-cortex-rag
+
+[Install]
+WantedBy=multi-user.target

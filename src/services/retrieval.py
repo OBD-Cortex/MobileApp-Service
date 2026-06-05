@@ -4,7 +4,7 @@ from core.models import embed_model
 
 logger = logging.getLogger(__name__)
 
-def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55) -> str:
+async def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55) -> str:
     """
     Retrieves highly relevant PDF/Manual info using Semantic Vector Search.
     Filters out "junk" matches using a strict similarity score threshold.
@@ -18,7 +18,7 @@ def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55
         vector = embed_model.encode(query).tolist()
         
         # 2. Query MongoDB Atlas Vector Database
-        results = list(col_knowledge.aggregate([
+        results = await col_knowledge.aggregate([
             {"$vectorSearch": {
                 "index": "vector_index",
                 "path": "embedding",
@@ -33,7 +33,7 @@ def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55
                 "source": 1, 
                 "score": {"$meta": "vectorSearchScore"}
             }}
-        ]))
+        ]).to_list(length=None)
         
         if not results: 
             return "No specific manual entry found in the database."
@@ -65,7 +65,7 @@ def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55
         return "Knowledge Base temporarily offline. Proceeding with general knowledge."
 
 
-def get_telemetry_context(vin: str) -> str:
+async def get_telemetry_context(vin: str) -> str:
     """
     Retrieves Live Telemetry History for a specific vehicle.
     Provides the AI with a temporal understanding of the car's state.
@@ -78,7 +78,7 @@ def get_telemetry_context(vin: str) -> str:
         # Fetch device registration metadata (brand, model, year)
         metadata_str = ""
         try:
-            device_info = col_devices.find_one({"vin": vin})
+            device_info = await col_devices.find_one({"vin": vin})
             if device_info:
                 brand = device_info.get("brand")
                 model = device_info.get("model")
@@ -89,7 +89,7 @@ def get_telemetry_context(vin: str) -> str:
             logger.warning(f"[!] Warning: Could not retrieve vehicle metadata: {e}")
 
         # Fetch the 3 most recent telemetry logs
-        logs = list(col_telemetry.find({"vehicle_id": vin}).sort("timestamp", -1).limit(3))
+        logs = await col_telemetry.find({"vehicle_id": vin}).sort("timestamp", -1).limit(3).to_list(length=None)
         
         if not logs: 
             return f"No live CAN-bus data connection detected for VIN: {vin}."

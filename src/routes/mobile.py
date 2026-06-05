@@ -10,12 +10,12 @@ import uuid
 import base64
 import datetime
 import logging
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
 
-from core.auth import hash_password, verify_password, create_jwt, verify_jwt
+from core.auth import hash_password, verify_password, create_jwt, verify_jwt, limiter
 from core.database import (
     col_users, col_devices, col_chat_history,
     col_telemetry, col_media
@@ -72,15 +72,16 @@ class MobileChatRequest(BaseModel):
 # ==========================================
 
 @router.post("/signup")
-def signup(request: SignupRequest):
+@limiter.limit("5/minute")
+async def signup(request: Request, payload: SignupRequest):
     """
     Creates a new user account and pairs a registered device.
     The device must be in 'registered' status (edge device has booted
     and bound to a VIN). After signup, the device transitions to 'paired'.
     """
     # 1. Validate device exists
-    normalized_token = request.device_token.strip().upper()
-    device = col_devices.find_one({"device_token": normalized_token})
+    normalized_token = payload.device_token.strip().upper()
+    device = await col_devices.find_one({"device_token": normalized_token})
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
@@ -98,7 +99,7 @@ def signup(request: SignupRequest):
         )
 
     # 3. Check username uniqueness (case-insensitive, stored lowercase)
-    if col_users.find_one({"username": request.username}):
+    if await col_users.find_one({"username": payload.username}):
         raise HTTPException(status_code=409, detail="Username is already taken")
 
     # 4. Create user document
@@ -108,8 +109,8 @@ def signup(request: SignupRequest):
 
     user_doc = {
         "user_id": user_id,
-        "username": request.username,
-        "password_hash": hash_password(request.password),
+        "username": payload.username,
+        "password_hash": hash_password(payload.password),
         "device_token": normalized_token,
         "vin": vin,
         "created_at": now,
@@ -117,11 +118,11 @@ def signup(request: SignupRequest):
     }
 
     # Pre-check device token uniqueness to prevent misleading error message
-    if col_users.find_one({"device_token": normalized_token}):
+    if await col_users.find_one({"device_token": normalized_token}):
         raise HTTPException(status_code=409, detail="Device is already linked to another account")
 
     try:
-        col_users.insert_one(user_doc)
+        await col_users.insert_one(user_doc)
     except Exception as e:
         # Handle race condition on unique index
         if "duplicate key" in str(e).lower():
@@ -131,7 +132,7 @@ def signup(request: SignupRequest):
         raise HTTPException(status_code=500, detail="Failed to create account")
 
     # 5. Update device: set status to 'paired' and record owner
-    col_devices.update_one(
+    await col_devices.update_one(
         {"device_token": normalized_token},
         {
             "$set": {
@@ -148,28 +149,29 @@ def signup(request: SignupRequest):
     return {
         "status": "success",
         "user_id": user_id,
-        "username": request.username,
+        "username": payload.username,
         "vin": vin,
         "token": token,
     }
 
 
 @router.post("/login")
-def login(request: LoginRequest):
+@limiter.limit("5/minute")
+async def login(request: Request, payload: LoginRequest):
     """
     Authenticates a user with username + password and returns a JWT.
     Also refreshes the VIN from the device document in case the device
     was re-registered to a different vehicle.
     """
-    username = request.username.strip().lower()
+    username = payload.username.strip().lower()
 
     # 1. Lookup user
-    user = col_users.find_one({"username": username})
+    user = await col_users.find_one({"username": username})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # 2. Verify password (constant-time bcrypt comparison)
-    if not verify_password(request.password, user["password_hash"]):
+    if not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # 3. Refresh VIN from device (device may have been plugged into a new car)
@@ -177,12 +179,12 @@ def login(request: LoginRequest):
     vin = user.get("vin", "")
 
     if device_token:
-        device = col_devices.find_one({"device_token": device_token})
+        device = await col_devices.find_one({"device_token": device_token})
         if device:
             current_vin = device.get("vin", "")
             if current_vin and current_vin != vin:
                 vin = current_vin
-                col_users.update_one(
+                await col_users.update_one(
                     {"user_id": user["user_id"]},
                     {"$set": {"vin": vin, "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}}
                 )
@@ -204,9 +206,9 @@ def login(request: LoginRequest):
 # ==========================================
 
 @router.get("/me")
-def get_profile(user: dict = Depends(verify_jwt)):
+async def get_profile(user: dict = Depends(verify_jwt)):
     """Returns the current user's profile, device info, and latest telemetry."""
-    user_doc = col_users.find_one({"user_id": user["sub"]})
+    user_doc = await col_users.find_one({"user_id": user["sub"]})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User account not found")
 
@@ -214,7 +216,7 @@ def get_profile(user: dict = Depends(verify_jwt)):
     device_info = None
     device_token = user_doc.get("device_token")
     if device_token:
-        device = col_devices.find_one({"device_token": device_token})
+        device = await col_devices.find_one({"device_token": device_token})
         if device:
             device.pop("_id", None)
             device.pop("owner_id", None)
@@ -224,7 +226,7 @@ def get_profile(user: dict = Depends(verify_jwt)):
     last_telemetry = None
     vin = user_doc.get("vin")
     if vin:
-        telem = col_telemetry.find_one(
+        telem = await col_telemetry.find_one(
             {"vehicle_id": vin},
             sort=[("timestamp", -1)]
         )
@@ -243,13 +245,13 @@ def get_profile(user: dict = Depends(verify_jwt)):
 
 
 @router.post("/chat")
-def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jwt)):
+async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jwt)):
     """
     AI diagnostic chat endpoint for mobile users. The VIN is resolved
     dynamically from the user's database record to avoid JWT claim staleness.
     """
     user_id = user["sub"]
-    user_doc = col_users.find_one({"user_id": user_id})
+    user_doc = await col_users.find_one({"user_id": user_id})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User account not found")
 
@@ -262,18 +264,21 @@ def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jwt)):
 
     try:
         # 1. Fetch chat history for this VIN
-        chat_doc = col_chat_history.find_one({"vin": vin})
+        chat_doc = await col_chat_history.find_one({"vin": vin})
         history = chat_doc["history"] if chat_doc else []
 
         # 2. Generate AI diagnostic
         answer = generate_diagnostic(request.query, history, vin)
+
+        if answer.startswith("Diagnostic Engine Error:"):
+            raise HTTPException(status_code=502, detail=answer)
 
         # 3. Update chat history (keep last 6 messages = 3 exchanges)
         history.append(f"User: {request.query}")
         history.append(f"AI: {answer}")
         history = history[-6:]
 
-        col_chat_history.update_one(
+        await col_chat_history.update_one(
             {"vin": vin},
             {"$set": {"history": history}},
             upsert=True
@@ -281,22 +286,16 @@ def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jwt)):
 
         return {"response": answer}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[!] Mobile chat error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/audio")
-async def upload_audio(
-    file: UploadFile = File(...),
-    user: dict = Depends(verify_jwt)
-):
-    """
-    Accepts an audio recording, sends it to Gemini's multimodal API for
-    automotive diagnostic analysis, and stores the result.
-    """
+async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set, media_type: str):
     user_id = user["sub"]
-    user_doc = col_users.find_one({"user_id": user_id})
+    user_doc = await col_users.find_one({"user_id": user_id})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User account not found")
 
@@ -304,52 +303,48 @@ async def upload_audio(
     if not vin:
         raise HTTPException(status_code=400, detail="No vehicle linked to your account.")
 
-    # 1. Validate file type
     content_type = file.content_type or ""
-    if content_type not in _ALLOWED_AUDIO_TYPES:
+    if content_type not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported audio format: {content_type}. Allowed: wav, mp3, m4a, ogg, webm"
+            detail=f"Unsupported {media_type} format: {content_type}."
         )
 
-    # 2. Read and validate size
-    audio_bytes = await file.read()
-    if len(audio_bytes) > _MAX_MEDIA_BYTES:
-        raise HTTPException(status_code=413, detail="Audio file exceeds 5MB limit")
-    if len(audio_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Audio file is empty")
+    media_bytes = await file.read()
+    if len(media_bytes) > _MAX_MEDIA_BYTES:
+        raise HTTPException(status_code=413, detail=f"{media_type.capitalize()} file exceeds 5MB limit")
+    if len(media_bytes) == 0:
+        raise HTTPException(status_code=400, detail=f"{media_type.capitalize()} file is empty")
 
-    # 3. Base64 encode
-    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    media_b64 = base64.b64encode(media_bytes).decode("utf-8")
 
-    # 4. Fetch chat history for context continuity
-    chat_doc = col_chat_history.find_one({"vin": vin})
+    chat_doc = await col_chat_history.find_one({"vin": vin})
     history = chat_doc["history"] if chat_doc else []
 
-    # 5. Send to Gemini multimodal API
-    analysis = generate_multimodal_diagnostic(audio_b64, content_type, vin, history)
+    analysis = generate_multimodal_diagnostic(media_b64, content_type, vin, history)
 
-    # 6. Store media record
+    if analysis.startswith("Diagnostic Engine Error:"):
+        raise HTTPException(status_code=502, detail=analysis)
+
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     media_doc = {
         "user_id": user["sub"],
         "vin": vin,
-        "media_type": "audio",
-        "filename": file.filename or "recording.wav",
-        "content_base64": audio_b64,
+        "media_type": media_type,
+        "filename": file.filename or f"upload.{content_type.split('/')[-1]}",
+        "content_base64": media_b64,
         "mime_type": content_type,
-        "size_bytes": len(audio_bytes),
+        "size_bytes": len(media_bytes),
         "ai_analysis": analysis,
         "created_at": now,
     }
-    result = col_media.insert_one(media_doc)
+    result = await col_media.insert_one(media_doc)
 
-    # 7. Append analysis to chat history
-    history.append(f"User: [Sent audio: {file.filename}]")
+    history.append(f"User: [Sent {media_type}: {file.filename}]")
     history.append(f"AI: {analysis}")
     history = history[-6:]
 
-    col_chat_history.update_one(
+    await col_chat_history.update_one(
         {"vin": vin},
         {"$set": {"history": history}},
         upsert=True
@@ -360,101 +355,42 @@ async def upload_audio(
         "media_id": str(result.inserted_id),
     }
 
+@router.post("/audio")
+async def upload_audio(file: UploadFile = File(...), user: dict = Depends(verify_jwt)):
+    """Accepts an audio recording, sends it to Gemini's multimodal API."""
+    return await _process_media_upload(file, user, _ALLOWED_AUDIO_TYPES, "audio")
 
 @router.post("/image")
-async def upload_image(
-    file: UploadFile = File(...),
-    user: dict = Depends(verify_jwt)
-):
-    """
-    Accepts an image upload, sends it to Gemini's multimodal API for
-    automotive visual diagnostic analysis, and stores the result.
-    """
-    user_id = user["sub"]
-    user_doc = col_users.find_one({"user_id": user_id})
-    if not user_doc:
-        raise HTTPException(status_code=404, detail="User account not found")
-
-    vin = user_doc.get("vin", "")
-    if not vin:
-        raise HTTPException(status_code=400, detail="No vehicle linked to your account.")
-
-    # 1. Validate file type
-    content_type = file.content_type or ""
-    if content_type not in _ALLOWED_IMAGE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported image format: {content_type}. Allowed: jpeg, png, webp"
-        )
-
-    # 2. Read and validate size
-    image_bytes = await file.read()
-    if len(image_bytes) > _MAX_MEDIA_BYTES:
-        raise HTTPException(status_code=413, detail="Image file exceeds 5MB limit")
-    if len(image_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Image file is empty")
-
-    # 3. Base64 encode
-    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    # 4. Fetch chat history for context continuity
-    chat_doc = col_chat_history.find_one({"vin": vin})
-    history = chat_doc["history"] if chat_doc else []
-
-    # 5. Send to Gemini multimodal API
-    analysis = generate_multimodal_diagnostic(image_b64, content_type, vin, history)
-
-    # 6. Store media record
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    media_doc = {
-        "user_id": user["sub"],
-        "vin": vin,
-        "media_type": "image",
-        "filename": file.filename or "photo.jpg",
-        "content_base64": image_b64,
-        "mime_type": content_type,
-        "size_bytes": len(image_bytes),
-        "ai_analysis": analysis,
-        "created_at": now,
-    }
-    result = col_media.insert_one(media_doc)
-
-    # 7. Append analysis to chat history
-    history.append(f"User: [Sent image: {file.filename}]")
-    history.append(f"AI: {analysis}")
-    history = history[-6:]
-
-    col_chat_history.update_one(
-        {"vin": vin},
-        {"$set": {"history": history}},
-        upsert=True
-    )
-
-    return {
-        "analysis": analysis,
-        "media_id": str(result.inserted_id),
-    }
+async def upload_image(file: UploadFile = File(...), user: dict = Depends(verify_jwt)):
+    """Accepts an image upload, sends it to Gemini's multimodal API."""
+    return await _process_media_upload(file, user, _ALLOWED_IMAGE_TYPES, "image")
 
 
 @router.delete("/account")
-def delete_account(user: dict = Depends(verify_jwt)):
+async def delete_account(user: dict = Depends(verify_jwt)):
     """
     Permanently deletes the user's account, unpairs their device, and wipes
     all associated data (chat history, media). After deletion, the device
     returns to 'registered' status and can be claimed by a new owner.
     """
     user_id = user["sub"]
-    vin = user.get("vin", "")
-    device_token = user.get("device_token", "")
+    
+    # Fetch user first to get the most up-to-date device_token and vin (avoid stale JWT claims)
+    user_doc = await col_users.find_one({"user_id": user_id})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User account not found")
+        
+    vin = user_doc.get("vin", "")
+    device_token = user_doc.get("device_token", "")
 
     # 1. Delete user document
-    del_result = col_users.delete_one({"user_id": user_id})
+    del_result = await col_users.delete_one({"user_id": user_id})
     if del_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User account not found")
 
     # 2. Unpair device: reset status to 'registered', remove owner binding
     if device_token:
-        col_devices.update_one(
+        await col_devices.update_one(
             {"device_token": device_token},
             {
                 "$set": {
@@ -467,10 +403,10 @@ def delete_account(user: dict = Depends(verify_jwt)):
 
     # 3. Wipe chat history for this VIN
     if vin:
-        col_chat_history.delete_one({"vin": vin})
+        await col_chat_history.delete_one({"vin": vin})
 
     # 4. Wipe media uploads for this user
-    col_media.delete_many({"user_id": user_id})
+    await col_media.delete_many({"user_id": user_id})
 
     return {
         "status": "success",
