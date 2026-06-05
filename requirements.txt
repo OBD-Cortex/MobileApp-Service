@@ -20,3 +20,4 @@ slowapi
 # Utilities
 polars
 psutil
+python-dotenv

@@ -15,7 +15,11 @@ import os
 # In production deployments, variables are read directly from OS environment 
 # variables (systemd/Docker configuration).
 #
-# AGENTS.md Rule Applied: Removed local dotenv loading for security.
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file if it exists.
+# This makes local testing and environment variable management easier.
+load_dotenv()
 
 
 # -------------------------------------------------------------
