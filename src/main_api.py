@@ -6,7 +6,6 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 
@@ -19,8 +18,6 @@ from slowapi.errors import RateLimitExceeded
 from core.auth import limiter
 
 from routes.mobile import router as mobile_router
-from routes.admin import router as admin_router
-from routes.edge import router as edge_router
 from routes.ingest import router as ingest_router
 
 @asynccontextmanager
@@ -41,10 +38,8 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Mount all application routers
+# Mount mobile application routers
 app.include_router(mobile_router)
-app.include_router(admin_router)
-app.include_router(edge_router)
 app.include_router(ingest_router)
 
 
@@ -123,12 +118,8 @@ async def health_endpoint():
     }
 
 # ==========================================
-# STATIC FILES & NETWORK HELPER
+# NETWORK HELPER
 # ==========================================
-# Serve the web interface if navigated to in a browser
-static_dir = os.path.join(os.path.dirname(__file__), "web-app")
-os.makedirs(static_dir, exist_ok=True) 
-app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 def get_local_ip():
     """Finds the local Wi-Fi IP address of this computer so Flutter can connect over LAN."""

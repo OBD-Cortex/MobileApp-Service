@@ -1,12 +1,36 @@
-# .gitignore
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-.env
-.venv/
-obd-venv/
+*.py[cod]
+*$py.class
 
-# Propject specific files
-.antigravity/
-Testing/
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# Database
+*.sqlite3
+
+# Models
+*.bin
+*.pt
+*.safetensors
+*.onnx
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Agents
 AGENTS.md
-tags

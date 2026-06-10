@@ -1,57 +1,32 @@
-# Hybrid Automotive RAG: AI Mechanic Assistant
+# OBD-Cortex: MobileApp Service
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green) ![Architecture](https://img.shields.io/badge/Architecture-Hybrid%20RAG-purple)
+The **MobileApp Service** is the heavy-lifting AI backend of the OBD-Cortex platform. It powers the end-user conversational interfaces, providing highly nuanced diagnostic guidance via Retrieval-Augmented Generation (RAG) powered by local text embeddings.
 
-## [*] Project Overview
-This repository hosts a **Hybrid Retrieval-Augmented Generation (RAG)** system designed for automotive diagnostics. It bridges the gap between raw vehicle telemetry and technical repair documentation.
+## Architecture Overview
 
-The system operates on a **"Two-Stream" Architecture**:
-1.  **Stream A (Knowledge):** Semantic search over PDF Repair Manuals & DTC Databases (Static Knowledge).
-2.  **Stream B (Context):** Real-time ingestion of CAN Bus telemetry data (Dynamic Context).
+1. **Local NLP Embeddings**: Utilizes the `microsoft/harrier-oss-v1-270m` SentenceTransformer model (loaded in `src/core/models.py`) to generate semantic embeddings at zero-token-cost directly on the host CPU.
+2. **Asynchronous Ingestion Pipeline**: Exposes endpoints for the Admin Dashboard to upload massive, 500+ page technical manuals and CSV catalogs. These are chunked and ingested asynchronously using `src/workers/ingestor.py` so as not to block incoming RAG queries.
+3. **Database Architecture**: Connects to the centralized MongoDB Atlas cluster (`src/core/database.py`). It relies heavily on Atlas Vector Search to retrieve contextually relevant vehicle repair data to feed into the conversational logic.
 
-It is lightweight enough to run on edge devices (like a Raspberry Pi 4) while offloading cognitive processing to a cloud LLM.
+## Repository Structure
 
----
+- `src/core/`: Database initialization, configuration logic, and the local `SentenceTransformer` instantiation.
+- `src/routes/`: Client-facing endpoints for mobile app chat and authentication, plus admin ingestion webhooks.
+- `src/workers/`: Background asynchronous tasks for heavy document parsing and Pandas DataFrame manipulations.
+- `src/main_api.py`: The root Uvicorn entrypoint for the service.
+- `systemd/`: Contains the daemon deployment configurations for Linux hosts.
 
-## [*] System Architecture
+## Local Development (Quick Start)
 
-The core innovation is the dual-retrieval pipeline which prevents the AI from "hallucinating" vehicle status.
+To run the RAG and Chat backend locally:
+1. Ensure **Python 3.10+** is installed.
+2. Create and activate a virtual environment: `python -m venv venv && source venv/bin/activate`
+3. Install dependencies: `pip install -r requirements.txt`
+4. Copy the environment variables: `cp .env.example .env` and fill in the required values.
+5. Start the development server: `uvicorn src.main_api:app --reload`
 
-```text
-[ VEHICLE / SIMULATOR ] 
-      │
-      ▼
-(Stream B: Live Telemetry) ──▶ [ MongoDB Time-Series Collection ] ──┐
-                                                                    │
-                                                                    ▼
-[ REPAIR MANUALS (PDF) ] ────▶ [ MongoDB Vector Store ] ────────▶ [ HYBRID RAG ENGINE ] ──▶ [ Google Gemini API ]
-      ▲                                                             │
-      │                                                             ▼
-(Stream A: Static Knowledge)                                [ USER INTERFACE ]
-```
+*(Note: The first time you boot the server, it will download the 1GB `microsoft/harrier-oss-v1-270m` SentenceTransformer model locally. This may take a few minutes depending on your connection.)*
 
-## [*] Testing
+## Deployment
 
-All test scripts are located in the `Testing/` directory. These tests are meant to run locally and are ignored by version control.
-Please ensure you use the project's dedicated virtual environment `obd-venv` when running tests.
-
-```bash
-source obd-venv/bin/activate
-python Testing/test_retrieve.py
-```
-
----
-
-## [*] Architectural & Modular Enhancements
-
-To align with high production standards and modular robustness according to `AGENTS.md`, several core improvements were implemented:
-1. **Case-Insensitive Device Token Verification**: Normalized device tokens to uppercase across verification, mobile signup, and admin routes to prevent registration/unpairing mismatches.
-2. **Environment Injection (Security)**: Removed local `python-dotenv` reading to strictly adhere to security constraints. All environment variables are natively injected by the OS or Docker host.
-3. **Database Date Parsing**: The telemetry edge gateway API parses incoming ISO-8601 string timestamps into native Python datetime objects before insertion, guaranteeing BSON Date integrity in MongoDB.
-4. **LLM Engine Refactoring**: Abstracted over 150 lines of duplicate API retry, rate-limiting, and Google Gemini execution logic into a clean, single-function functional pipeline.
-5. **Chat History Protection (API Error Safety Guard)**: Added checks in mobile and legacy chat endpoints to detect LLM API failures (prefixed with `Diagnostic Engine Error:`) and raise a `502 Bad Gateway` HTTP error rather than persisting them in the chat history.
-6. **Unique Device Provisioning**: Implemented a retry verification loop for candidate edge device IDs in the registration pathway to ensure device ID collisions do not occur in production.
-7. **Database Index Verification**: Added programmatic setup of unique indexes for `device_token` and `device_id` on the devices collection, preventing duplication at the BSON layer.
-8. **Bulk Ingestor File Type Alignment**: Added native processing of `.md` and `.txt` files to the bulk vectorization worker (`ingestor.py`) to align with the RAG manual ingestion API capabilities.
-9. **Account Deletion Database Integrity**: Upgraded the account deletion flow to read bindings directly from the MongoDB user document rather than trust incoming JWT claims, ensuring clean device unpairing and data scrubbing.
-
+Please refer to `DEPLOYMENT.md` for a comprehensive, production-grade deployment guide on DigitalOcean using Nginx, Certbot, and Fish. Due to the Pandas and embedding operations, **Swap memory configuration is critical** for this service.
