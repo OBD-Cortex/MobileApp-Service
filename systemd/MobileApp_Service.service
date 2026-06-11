@@ -5,9 +5,9 @@ After=network.target
 [Service]
 User=app-service
 Group=app-service
-WorkingDirectory=/home/app-service/MobileApp-Service
-Environment="PATH=/home/app-service/MobileApp-Service/venv/bin"
-ExecStart=/home/app-service/MobileApp-Service/venv/bin/uvicorn src.main_api:app --host 127.0.0.1 --port 8000 --workers 4
+WorkingDirectory=/home/app-service/MobileApp_Service
+Environment="PATH=/home/app-service/MobileApp_Service/venv/bin"
+ExecStart=/home/app-service/MobileApp_Service/venv/bin/uvicorn main_api:app --app-dir src --host 127.0.0.1 --port 8000 --workers 4
 
 Restart=always
 RestartSec=5

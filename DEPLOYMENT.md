@@ -27,19 +27,24 @@ GOOGLE_API_KEY=your_gemini_api_key_here
 
 ## Production Server Setup
 
-Execute these commands as `root` to create a dedicated service user and configure SSH:
+Execute these commands as `root` before switching to the service user. This will install system dependencies, create a dedicated service user, and configure SSH access:
 
 ```bash
-sudo useradd -m -s /usr/bin/fish app-service
-sudo chsh -s /usr/bin/fish app-service
-sudo mkdir -p /home/app-service/.ssh
-sudo chown app-service:app-service /home/app-service/.ssh
-sudo chmod 700 /home/app-service/.ssh
-nvim /home/app-service/.ssh/authorized_keys
-chown app-service:app-service /home/app-service/.ssh/authorized_keys
-chmod 600 /home/app-service/.ssh/authorized_keys
+# Install fish and neovim
+apt update && apt install -y fish neovim
+
+# Create dedicated service user and configure fish shell
+useradd -m -s /usr/bin/fish app-service
+chsh -s /usr/bin/fish app-service
 passwd app-service
 usermod -aG sudo app-service
+
+# Configure SSH key by copying from root
+mkdir -p /home/app-service/.ssh
+cp /root/.ssh/authorized_keys /home/app-service/.ssh/authorized_keys
+chown -R app-service:app-service /home/app-service/.ssh
+chmod 700 /home/app-service/.ssh
+chmod 600 /home/app-service/.ssh/authorized_keys
 ```
 
 ---
@@ -66,7 +71,7 @@ SSH into the newly created `app-service` user:
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y git nginx certbot ufw python3.10-venv
+sudo apt install -y git nginx python3-certbot-nginx ufw python3.12-venv
 python3 -m venv venv
 source venv/bin/activate.fish
 
@@ -83,7 +88,7 @@ To streamline the environment, add the following to `~/.config/fish/config.fish`
 
 ```fish
 set -g fish_greeting
-set -gx ENV_PATH "/home/app-service/MobileApp-Service/.env"
+set -gx ENV_PATH "/home/app-service/MobileApp_Service/.env"
 set -gx TERM xterm-256color
 ```
 
@@ -152,16 +157,32 @@ server {
 }
 ```
 
-Enable the site and configure SSL:
+Enable the site, configure the firewall, and obtain the SSL certificate:
 
 ```bash
 sudo ln -sf /etc/nginx/sites-available/MobileApp-Service /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 
+# Allow OpenSSH and deny external port 8000 access
+sudo ufw allow OpenSSH
+sudo ufw deny 8000/tcp
+
+# Temporarily allow 'Nginx Full' for Certbot validation
+sudo ufw allow 'Nginx Full'
+
+# Enable firewall
+sudo ufw --force enable
+
 # Obtain SSL Certificate
 sudo certbot --nginx -d app.yourdomain.com
 
+# Revert firewall to HTTPS only by allowing 'Nginx HTTPS' and deleting 'Nginx Full'
+sudo ufw allow 'Nginx HTTPS'
+sudo ufw delete allow 'Nginx Full'
+sudo ufw status verbose
+
+# Restart Nginx
 sudo systemctl restart nginx
 sudo systemctl enable nginx.service
 ```
@@ -170,19 +191,11 @@ sudo systemctl enable nginx.service
 
 ## Firewall Setup
 
-Set up UFW rules to drop external incoming traffic to port `8000`, ensuring exposure strictly via proxy.
+The permanent firewall rules ensure that only SSH and HTTPS are allowed externally, while port `8000` is blocked.
+
+Verify the configuration:
 
 ```bash
-# Allow necessary services
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx HTTPS'
-sudo ufw allow 'Nginx HTTP'
-
-# Explicitly ensure port 8000 is blocked externally (UFW denies by default)
-sudo ufw deny 8000/tcp
-
-# Enable firewall
-sudo ufw --force enable
 sudo ufw status verbose
 ```
 
