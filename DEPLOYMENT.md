@@ -18,10 +18,10 @@ Create a `.env` file containing the following:
 
 ```env
 MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority
-OPENAI_API_KEY=your_llm_generation_key_here
+GOOGLE_API_KEY=your_gemini_api_key_here
 ```
 
-*(Note: Embeddings run locally via the Harrier model, but generation may require the OpenAI API key depending on your specific prompt routes).*
+*(Note: Embeddings run locally via the Harrier model, but generation requires the Gemini API key).*
 
 ---
 
