@@ -13,10 +13,6 @@ from contextlib import asynccontextmanager
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from core.auth import limiter
-
 from routes.mobile import router as mobile_router
 from routes.ingest import router as ingest_router
 
@@ -34,9 +30,6 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Mount mobile application routers
 app.include_router(mobile_router)

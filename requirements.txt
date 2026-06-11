@@ -14,10 +14,6 @@ llama-cloud
 
 # Security
 bcrypt
-PyJWT
-slowapi
-
 # Utilities
 polars
-psutil
 python-dotenv

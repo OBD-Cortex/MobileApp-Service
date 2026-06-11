@@ -15,7 +15,7 @@ from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
 
-from core.auth import hash_password, verify_password, create_jwt, verify_jwt, limiter
+from core.auth import hash_password, verify_password, create_jwt, verify_jwt
 from core.database import (
     col_users, col_devices, col_chat_history,
     col_telemetry, col_media
@@ -72,7 +72,6 @@ class MobileChatRequest(BaseModel):
 # ==========================================
 
 @router.post("/signup")
-@limiter.limit("5/minute")
 async def signup(request: Request, payload: SignupRequest):
     """
     Creates a new user account and pairs a registered device.
@@ -156,7 +155,6 @@ async def signup(request: Request, payload: SignupRequest):
 
 
 @router.post("/login")
-@limiter.limit("5/minute")
 async def login(request: Request, payload: LoginRequest):
     """
     Authenticates a user with username + password and returns a JWT.

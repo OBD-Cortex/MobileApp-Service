@@ -14,16 +14,10 @@ Security Hardening Applied:
 import datetime
 import logging
 import bcrypt
-import jwt
-import hmac
 import uuid
 from fastapi import HTTPException, Header, Security
-from fastapi.security import APIKeyHeader
-from core.config import JWT_SECRET, MOBILE_API_KEY
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
-limiter = Limiter(key_func=get_remote_address)
+from core.config import JWT_SECRET
+from core.jwt_native import encode_jwt, decode_jwt, JWTError, JWTExpiredError
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +33,7 @@ if JWT_SECRET and len(JWT_SECRET) < _MIN_SECRET_LENGTH:
         f"Minimum recommended length is {_MIN_SECRET_LENGTH}."
     )
 
-if MOBILE_API_KEY and len(MOBILE_API_KEY) < _MIN_SECRET_LENGTH:
-    logger.warning(
-        f"[!] MOBILE_API_KEY is only {len(MOBILE_API_KEY)} characters. "
-        f"Minimum recommended length is {_MIN_SECRET_LENGTH}."
-    )
+
 
 # Token lifetime: 7 days
 _TOKEN_LIFETIME = datetime.timedelta(days=7)
@@ -76,7 +66,7 @@ def create_jwt(user_id: str, username: str, device_token: str, vin: str) -> str:
     if not JWT_SECRET:
         raise RuntimeError("JWT_SECRET environment variable is not set")
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
     payload = {
         "sub": user_id,
         "username": username,
@@ -85,28 +75,27 @@ def create_jwt(user_id: str, username: str, device_token: str, vin: str) -> str:
         "iss": _JWT_ISSUER,       # Issuer claim for token binding
         "aud": _JWT_AUDIENCE,     # Audience claim for token binding
         "jti": str(uuid.uuid4()), # Unique token ID for future revocation
-        "iat": now,
-        "exp": now + _TOKEN_LIFETIME,
+        "iat": now_ts,
+        "exp": now_ts + _TOKEN_LIFETIME.total_seconds(),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    return encode_jwt(payload, JWT_SECRET)
 
 
-def decode_jwt(token: str) -> dict:
+def verify_jwt_payload(token: str) -> dict:
     """Verifies signature + expiry and returns the decoded payload."""
     if not JWT_SECRET:
         raise RuntimeError("JWT_SECRET environment variable is not set")
 
     try:
-        return jwt.decode(
+        return decode_jwt(
             token,
-            JWT_SECRET,
-            algorithms=["HS256"],
+            secret=JWT_SECRET,
             issuer=_JWT_ISSUER,
             audience=_JWT_AUDIENCE,
         )
-    except jwt.ExpiredSignatureError:
+    except JWTExpiredError:
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -128,22 +117,7 @@ def verify_jwt(authorization: str = Header(..., alias="Authorization")) -> dict:
         raise HTTPException(status_code=401, detail="Authorization header must start with 'Bearer '")
 
     token = authorization[7:]  # Strip "Bearer " prefix
-    return decode_jwt(token)
-
-
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
-
-def verify_api_key(api_key: str = Security(api_key_header)):
-    """Verifies the API key using timing-safe comparison to prevent timing attacks."""
-    if not MOBILE_API_KEY:
-        logger.error("[!] MOBILE_API_KEY is not configured")
-        raise HTTPException(status_code=500, detail="Server misconfiguration")
-
-    # SECURITY: hmac.compare_digest prevents timing-based key extraction
-    if not hmac.compare_digest(api_key.encode("utf-8"), MOBILE_API_KEY.encode("utf-8")):
-        logger.warning(f"[!] Invalid API key attempt (key length: {len(api_key)})")
-        raise HTTPException(status_code=403, detail="Invalid API Key")
-    return api_key
+    return verify_jwt_payload(token)
 
 
 # Removed unused edge device auth methods
