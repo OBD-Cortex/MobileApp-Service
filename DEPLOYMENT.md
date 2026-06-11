@@ -2,6 +2,16 @@
 
 This guide outlines the production-ready deployment strategy for the MobileApp Service on a DigitalOcean Droplet using Nginx, HTTPS via Certbot, and `ufw` firewall rules.
 
+---
+
+## Security Requirements & Firewalls (UFW)
+
+> [!WARNING]
+> **Strict Port Isolation:** The Uvicorn app processes execute on port `8000` bound to the local loopback interface `127.0.0.1`.
+> **You must configure UFW to drop external incoming traffic to port 8000.** Letting clients access port 8000 directly bypasses the reverse proxy, leaving endpoints exposed. Only ports 80 (HTTP) and 443 (HTTPS) must be allowed externally.
+
+---
+
 ## Environment Variables
 
 Create a `.env` file containing the following:
@@ -10,7 +20,10 @@ Create a `.env` file containing the following:
 MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority
 OPENAI_API_KEY=your_llm_generation_key_here
 ```
+
 *(Note: Embeddings run locally via the Harrier model, but generation may require the OpenAI API key depending on your specific prompt routes).*
+
+---
 
 ## Production Server Setup
 
@@ -29,9 +42,12 @@ passwd app-service
 usermod -aG sudo app-service
 ```
 
+---
+
 ## Swap Memory Allocation
 
-**CRITICAL:** Because this service loads a 1GB NLP model into RAM and processes massive Pandas DataFrames, a large Swap file is mandatory to prevent Out-of-Memory (OOM) crashes during asynchronous ingestion.
+> [!IMPORTANT]
+> **CRITICAL CONFIGURATION:** Because this service loads a 1GB NLP model into RAM and processes massive Pandas DataFrames, a large Swap file is mandatory to prevent Out-of-Memory (OOM) crashes during asynchronous ingestion. Allocate at least **4GB Swap** on the host Droplet.
 
 ```bash
 sudo fallocate -l 4G /swapfile
@@ -41,6 +57,8 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 free -h
 ```
+
+---
 
 ## Service Installation
 
@@ -57,6 +75,8 @@ pip install -r requirements.txt
 chmod 600 .env
 ```
 
+---
+
 ## Fish Shell Configuration
 
 To streamline the environment, add the following to `~/.config/fish/config.fish`:
@@ -66,6 +86,8 @@ set -g fish_greeting
 set -gx ENV_PATH "/home/app-service/MobileApp-Service/.env"
 set -gx TERM xterm-256color
 ```
+
+---
 
 ## Nginx & HTTPS Configuration
 
@@ -138,19 +160,31 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 
 # Obtain SSL Certificate
-sudo certbot --nginx -d app-api.yourdomain.com
+sudo certbot --nginx -d app.yourdomain.com
 
 sudo systemctl restart nginx
 sudo systemctl enable nginx.service
 ```
 
+---
+
 ## Firewall Setup
 
+Set up UFW rules to drop external incoming traffic to port `8000`, ensuring exposure strictly via proxy.
+
 ```bash
+# Allow necessary services
 sudo ufw allow OpenSSH
 sudo ufw allow 'Nginx HTTPS'
+sudo ufw allow 'Nginx HTTP'
+
+# Explicitly ensure port 8000 is blocked externally (UFW denies by default)
+sudo ufw deny 8000/tcp
+
+# Enable firewall
 sudo ufw --force enable
-sudo ufw status
+sudo ufw status verbose
 ```
 
 To run the application persistently, refer to the provided `systemd/MobileApp_Service.service` template.
+

@@ -1,32 +1,55 @@
-# OBD-Cortex: MobileApp Service
+# OBD-Cortex: MobileApp Diagnostic Service
 
-The **MobileApp Service** is the heavy-lifting AI backend of the OBD-Cortex platform. It powers the end-user conversational interfaces, providing highly nuanced diagnostic guidance via Retrieval-Augmented Generation (RAG) powered by local text embeddings.
+The **MobileApp Service** is the core AI-powered diagnostic engine of the OBD-Cortex platform. It powers conversational diagnostics via Retrieval-Augmented Generation (RAG) by merging live vehicle CAN bus data with context retrieved from technical manuals.
 
-## Architecture Overview
+---
 
-1. **Local NLP Embeddings**: Utilizes the `microsoft/harrier-oss-v1-270m` SentenceTransformer model (loaded in `src/core/models.py`) to generate semantic embeddings at zero-token-cost directly on the host CPU.
-2. **Asynchronous Ingestion Pipeline**: Exposes endpoints for the Admin Dashboard to upload massive, 500+ page technical manuals and CSV catalogs. These are chunked and ingested asynchronously using `src/workers/ingestor.py` so as not to block incoming RAG queries.
-3. **Database Architecture**: Connects to the centralized MongoDB Atlas cluster (`src/core/database.py`). It relies heavily on Atlas Vector Search to retrieve contextually relevant vehicle repair data to feed into the conversational logic.
+## Service Architecture
+
+1.  **Local NLP Embeddings:** Generates semantic embeddings locally using the `microsoft/harrier-oss-v1-270m` SentenceTransformer model (instantiated in `src/core/models.py`). This runs entirely on the host CPU at zero token cost.
+2.  **Asynchronous Ingestion Worker:** Exposes endpoints to ingest large manuals asynchronously. PDF manual processing runs in background threads (`src/workers/ingestor.py`) to prevent blocking API requests.
+3.  **Advanced Vector Search:** Connects to MongoDB Atlas to execute similarity vector search matches (`get_manual_context` in `src/services/retrieval.py`). Only documents scoring above the similarity threshold (`0.55`) are fed to the model context.
+4.  **AI Engine:** Integrates Google's Gemini Flash model (recommending `models/gemini-3.5-flash` in `src/services/llm_agent.py`) with fallback structures to handle API issues gracefully.
+5.  **Multimodal Diagnostics:** Features base64-encoded image and audio diagnostic ingestion. It extracts symptoms from the media payload via Gemini before routing queries to standard RAG.
+6.  **No Version Pins:** `requirements.txt` does not restrict package versions, ensuring you always pull the latest stable libraries during setup.
+
+---
 
 ## Repository Structure
 
-- `src/core/`: Database initialization, configuration logic, and the local `SentenceTransformer` instantiation.
-- `src/routes/`: Client-facing endpoints for mobile app chat and authentication, plus admin ingestion webhooks.
-- `src/workers/`: Background asynchronous tasks for heavy document parsing and Pandas DataFrame manipulations.
-- `src/main_api.py`: The root Uvicorn entrypoint for the service.
-- `systemd/`: Contains the daemon deployment configurations for Linux hosts.
+*   `src/core/models.py`: Initializes the local `SentenceTransformer` embedder.
+*   `src/services/llm_agent.py`: Controls Gemini integration, content sanitization, retry blocks, and API key scrubbing.
+*   `src/services/retrieval.py`: Vectors search calculations and live time-series telemetry context formatters.
+*   `src/workers/ingestor.py`: Standard file scanner for bulk directory updates.
+*   `src/main_api.py`: Uvicorn startup configs, LAN IP listeners, and rate-limiting registrations.
 
-## Local Development (Quick Start)
+---
 
-To run the RAG and Chat backend locally:
-1. Ensure **Python 3.10+** is installed.
-2. Create and activate a virtual environment: `python -m venv venv && source venv/bin/activate`
-3. Install dependencies: `pip install -r requirements.txt`
-4. Copy the environment variables: `cp .env.example .env` and fill in the required values.
-5. Start the development server: `uvicorn src.main_api:app --reload`
+## Local Development Setup
 
-*(Note: The first time you boot the server, it will download the 1GB `microsoft/harrier-oss-v1-270m` SentenceTransformer model locally. This may take a few minutes depending on your connection.)*
+To run this RAG and conversational engine locally:
+1.  Verify **Python 3.10+** is installed.
+2.  Initialize virtual environment:
+    ```bash
+    python -m venv venv && source venv/bin/activate
+    ```
+3.  Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+4.  Copy environment variables:
+    ```bash
+    cp .env.example .env
+    ```
+5.  Configure your MongoDB URI, API keys, and model overrides inside `.env`.
+6.  Start development server:
+    ```bash
+    uvicorn src.main_api:app --reload
+    ```
 
-## Deployment
+> [!NOTE]
+> On the first startup, the daemon will download the 1GB `harrier-oss-v1-270m` transformer model. This can take a few minutes.
 
-Please refer to `DEPLOYMENT.md` for a comprehensive, production-grade deployment guide on DigitalOcean using Nginx, Certbot, and Fish. Due to the Pandas and embedding operations, **Swap memory configuration is critical** for this service.
+---
+
+
