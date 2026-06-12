@@ -49,22 +49,6 @@ chmod 600 /home/app-service/.ssh/authorized_keys
 
 ---
 
-## Swap Memory Allocation
-
-> [!IMPORTANT]
-> **CRITICAL CONFIGURATION:** Because this service loads a 1GB NLP model into RAM and processes massive Pandas DataFrames, a large Swap file is mandatory to prevent Out-of-Memory (OOM) crashes during asynchronous ingestion. Allocate at least **4GB Swap** on the host Droplet.
-
-```bash
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-free -h
-```
-
----
-
 ## Service Installation
 
 SSH into the newly created `app-service` user:
@@ -88,7 +72,7 @@ To streamline the environment, add the following to `~/.config/fish/config.fish`
 
 ```fish
 set -g fish_greeting
-set -gx ENV_PATH "/home/app-service/MobileApp_Service/.env"
+set -gx ENV_PATH "/home/app-service/MobileApp-Service/.env"
 set -gx TERM xterm-256color
 ```
 
@@ -110,7 +94,7 @@ Define the custom log format in `/etc/nginx/nginx.conf` (inside the `http { ... 
 Configure Nginx (`sudo nvim /etc/nginx/sites-available/MobileApp-Service`):
 
 ```nginx
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=app_limit:10m rate=10r/s;
 
 server {
     server_name app.yourdomain.com;
@@ -120,11 +104,11 @@ server {
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    # Allow large PDF manual uploads from the Admin dashboard
-    client_max_body_size 50M;
+    # Allow multimodal diagnostic payload uploads (images, audio)
+    client_max_body_size 10M;
 
     location / {
-        limit_req zone=api_limit burst=20 nodelay;
+        limit_req zone=app_limit burst=20 nodelay;
 
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
@@ -175,7 +159,7 @@ sudo ufw allow 'Nginx Full'
 sudo ufw --force enable
 
 # Obtain SSL Certificate
-sudo certbot --nginx -d app.yourdomain.com
+sudo certbot --nginx -d app.yourdomain.com --register-unsafely-without-email
 
 # Revert firewall to HTTPS only by allowing 'Nginx HTTPS' and deleting 'Nginx Full'
 sudo ufw allow 'Nginx HTTPS'
@@ -199,5 +183,5 @@ Verify the configuration:
 sudo ufw status verbose
 ```
 
-To run the application persistently, refer to the provided `systemd/MobileApp_Service.service` template.
+To run the application persistently, refer to the provided `systemd/MobileApp-Service.service` template.
 

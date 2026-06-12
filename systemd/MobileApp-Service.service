@@ -1,0 +1,16 @@
+[Unit]
+Description=OBD-Cortex MobileApp Service (FastAPI)
+After=network.target
+
+[Service]
+User=app-service
+Group=app-service
+WorkingDirectory=/home/app-service/MobileApp-Service
+Environment="PATH=/home/app-service/MobileApp-Service/venv/bin"
+ExecStart=/home/app-service/MobileApp-Service/venv/bin/uvicorn main_api:app --app-dir src --host 127.0.0.1 --port 8000 --workers 1
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

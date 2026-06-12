@@ -44,7 +44,7 @@ To run this RAG and conversational engine locally:
 5.  Configure your MongoDB URI, API keys, and model overrides inside `.env`.
 6.  Start development server:
     ```bash
-    uvicorn src.main_api:app --reload
+    uvicorn main_api:app --app-dir src --reload
     ```
 
 > [!NOTE]
@@ -52,4 +52,6 @@ To run this RAG and conversational engine locally:
 
 ---
 
+## Deployment Guide
 
+*   Refer to [DEPLOYMENT.md](file:///home/bodz/OBD-Cortex/MobileApp-Service/DEPLOYMENT.md) for production VM setup using Nginx reverse proxying, UFW firewall configurations, and systemd automation templates.
