@@ -1,5 +1,5 @@
 import os
-import requests
+import httpx
 import re
 import time
 import logging
@@ -53,7 +53,7 @@ def get_gemini_model() -> str:
     # 2. Fallback: Auto-Discovery logic if PREFERRED_MODEL = None
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GOOGLE_API_KEY}"
     try:
-        response = requests.get(url, timeout=5)
+        response = httpx.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
         
@@ -88,7 +88,7 @@ def _call_gemini_api(payload: dict, timeout: int = 15) -> str:
     for attempt in range(max_retries):
         res = None
         try:
-            res = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            res = httpx.post(url, json=payload, headers=headers, timeout=timeout)
             
             if res.status_code in [429, 500, 503]:
                 logger.warning(f"[!] Google API Busy ({res.status_code}). Retrying {attempt + 1}/{max_retries}...")
@@ -124,21 +124,21 @@ def _call_gemini_api(payload: dict, timeout: int = 15) -> str:
                 
             return parts[0]['text']
             
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             if attempt < max_retries - 1:
                 logger.warning(f"[!] Google API Timeout. Retrying {attempt + 1}/{max_retries}...")
                 time.sleep(2 ** attempt)
                 continue
             return "Diagnostic Engine Error: The Google API took too long to respond."
             
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             error_str = str(e)
             if GOOGLE_API_KEY and GOOGLE_API_KEY in error_str:
                 error_str = error_str.replace(GOOGLE_API_KEY, "[REDACTED_API_KEY]")
                 
             logger.error(f"[!] Secure Log - API Request Failed: {error_str}") 
             
-            if res is not None and not res.ok and res.status_code not in [429, 500, 503]:
+            if res is not None and res.is_error and res.status_code not in [429, 500, 503]:
                 return f"Diagnostic Engine Error: Invalid request ({res.status_code}). Check server logs."
                 
             if attempt < max_retries - 1:
