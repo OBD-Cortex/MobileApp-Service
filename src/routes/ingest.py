@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Backgro
 from fastapi.concurrency import run_in_threadpool
 
 from core.database import col_jobs
-from core.auth import verify_api_key
+from core.auth import verify_jwt
 from services.ingest_service import ingest_pdf, ingest_csv, ingest_text
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ async def process_ingestion_background(job_id: str, temp_path: str, filename: st
 async def start_ingestion_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    api_key: str = Depends(verify_api_key)
+    user: dict = Depends(verify_jwt)
 ):
     """Receives a manual PDF/CSV file upload and starts background vector ingestion."""
     filename = file.filename
@@ -78,7 +78,7 @@ async def start_ingestion_job(
     return {"job_id": job_id, "status": "queued"}
 
 @router.get("/status/{job_id}")
-async def get_ingestion_status(job_id: str, api_key: str = Depends(verify_api_key)):
+async def get_ingestion_status(job_id: str, user: dict = Depends(verify_jwt)):
     """Retrieves the current execution status and logs for a background ingestion job."""
     job_doc = await col_jobs.find_one({"_id": job_id})
     if not job_doc:
