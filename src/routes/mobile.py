@@ -39,6 +39,7 @@ _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 class SignupRequest(BaseModel):
     username: str
+    email: str
     password: str
     device_token: str
 
@@ -109,6 +110,7 @@ async def signup(request: Request, payload: SignupRequest):
     user_doc = {
         "user_id": user_id,
         "username": payload.username,
+        "email": payload.email.strip().lower(),
         "password_hash": hash_password(payload.password),
         "device_token": normalized_token,
         "vin": vin,
@@ -143,7 +145,7 @@ async def signup(request: Request, payload: SignupRequest):
     )
 
     # 6. Generate JWT
-    token = create_jwt(user_id, request.username, normalized_token, vin)
+    token = create_jwt(user_id, payload.username, normalized_token, vin)
 
     return {
         "status": "success",
@@ -161,10 +163,15 @@ async def login(request: Request, payload: LoginRequest):
     Also refreshes the VIN from the device document in case the device
     was re-registered to a different vehicle.
     """
-    username = payload.username.strip().lower()
+    username_or_email = payload.username.strip().lower()
 
-    # 1. Lookup user
-    user = await col_users.find_one({"username": username})
+    # 1. Lookup user by username or email
+    user = await col_users.find_one({
+        "$or": [
+            {"username": username_or_email},
+            {"email": username_or_email}
+        ]
+    })
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
@@ -188,14 +195,32 @@ async def login(request: Request, payload: LoginRequest):
                 )
 
     # 4. Generate JWT
-    token = create_jwt(user["user_id"], username, device_token, vin)
+    token = create_jwt(user["user_id"], user["username"], device_token, vin)
 
     return {
         "status": "success",
         "user_id": user["user_id"],
-        "username": username,
+        "username": user["username"],
         "vin": vin,
         "token": token,
+    }
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+@router.post("/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    \"\"\"
+    Dummy endpoint for password reset.
+    In a real system, this would trigger an email with a reset link/OTP.
+    \"\"\"
+    email = payload.email.strip().lower()
+    user = await col_users.find_one({"email": email})
+    
+    # We always return success to prevent email enumeration attacks
+    return {
+        "status": "success",
+        "message": "If an account with that email exists, a password reset link has been sent."
     }
 
 
