@@ -70,11 +70,19 @@ async def init_db():
     except Exception as e:
         logger.warning(f"[!] Warning: Could not create index on col_telemetry: {e}")
 
-    # Create unique index on chat history for fast per-VIN session lookups
+    # Recreate index on chat history to support multiple sessions per VIN
     try:
-        await col_chat_history.create_index("vin", unique=True)
+        # Drop legacy unique index on vin if it exists
+        try:
+            await col_chat_history.drop_index("vin_1")
+        except Exception:
+            pass
+        # Create non-unique index on vin for fast lookups of all sessions of a VIN
+        await col_chat_history.create_index("vin")
+        # Create unique compound index on vin + session_id
+        await col_chat_history.create_index([("vin", 1), ("session_id", 1)], unique=True)
     except Exception as e:
-        logger.warning(f"[!] Warning: Could not create index on col_chat_history: {e}")
+        logger.warning(f"[!] Warning: Could not configure indexes on col_chat_history: {e}")
 
     # Create TTL index on ingestion jobs to auto-delete documents after 24 hours (86400 seconds)
     try:

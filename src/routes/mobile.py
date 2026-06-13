@@ -66,6 +66,11 @@ class LoginRequest(BaseModel):
 
 class MobileChatRequest(BaseModel):
     query: str
+    session_id: str = None
+
+
+class RenameSessionRequest(BaseModel):
+    title: str
 
 
 # ==========================================
@@ -268,7 +273,7 @@ async def get_profile(user: dict = Depends(verify_jwt)):
 
 
 @router.get("/chat/history")
-async def get_chat_history(user: dict = Depends(verify_jwt)):
+async def get_chat_history(session_id: str = None, user: dict = Depends(verify_jwt)):
     """
     Retrieves chat history and parses the stored strings into a JSON array for the mobile app.
     """
@@ -282,7 +287,10 @@ async def get_chat_history(user: dict = Depends(verify_jwt)):
         return {"history": []}
 
     try:
-        chat_doc = await col_chat_history.find_one({"vin": vin})
+        if session_id:
+            chat_doc = await col_chat_history.find_one({"vin": vin, "session_id": session_id})
+        else:
+            chat_doc = await col_chat_history.find_one({"vin": vin}, sort=[("updated_at", -1)])
         history = chat_doc["history"] if chat_doc else []
         
         formatted = []
@@ -355,8 +363,16 @@ async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jw
         )
 
     try:
-        # 1. Fetch chat history for this VIN
-        chat_doc = await col_chat_history.find_one({"vin": vin})
+        session_id = request.session_id
+        is_new_session = False
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            is_new_session = True
+
+        # 1. Fetch chat history for this session
+        chat_doc = None
+        if not is_new_session:
+            chat_doc = await col_chat_history.find_one({"vin": vin, "session_id": session_id})
         history = chat_doc["history"] if chat_doc else []
 
         # 2. Generate AI diagnostic
@@ -365,19 +381,34 @@ async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jw
         if answer.startswith("Diagnostic Engine Error:"):
             raise HTTPException(status_code=502, detail=answer)
 
-        # 3. Update chat history (keep last 6 messages = 3 exchanges)
+        # 3. Update chat history
         now_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
         history.append({"role": "user", "type": "text", "content": request.query, "timestamp": now_ts})
         history.append({"role": "ai", "type": "text", "content": answer, "timestamp": now_ts})
         history = history[-100:] # Keep the last 50 exchanges in the database
 
+        title = chat_doc.get("title") if chat_doc else None
+        if not title:
+            q = request.query.strip()
+            title = q[:25] + "..." if len(q) > 25 else q
+
         await col_chat_history.update_one(
-            {"vin": vin},
-            {"$set": {"history": history}},
+            {"vin": vin, "session_id": session_id},
+            {
+                "$set": {
+                    "title": title,
+                    "history": history,
+                    "updated_at": now_ts
+                }
+            },
             upsert=True
         )
 
-        return {"response": answer}
+        return {
+            "response": answer,
+            "session_id": session_id,
+            "title": title
+        }
 
     except HTTPException:
         raise
@@ -386,7 +417,7 @@ async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jw
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set, media_type: str):
+async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set, media_type: str, session_id: str = None):
     user_id = user["sub"]
     user_doc = await col_users.find_one({"user_id": user_id})
     if not user_doc:
@@ -411,7 +442,14 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
 
     media_b64 = base64.b64encode(media_bytes).decode("utf-8")
 
-    chat_doc = await col_chat_history.find_one({"vin": vin})
+    is_new_session = False
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        is_new_session = True
+
+    chat_doc = None
+    if not is_new_session:
+        chat_doc = await col_chat_history.find_one({"vin": vin, "session_id": session_id})
     history = chat_doc["history"] if chat_doc else []
 
     analysis = await generate_multimodal_diagnostic(media_b64, content_type, vin, history)
@@ -447,9 +485,19 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
     })
     history = history[-100:] # Keep the last 50 exchanges in the database
 
+    title = chat_doc.get("title") if chat_doc else None
+    if not title:
+        title = f"Uploaded {media_type.capitalize()}"
+
     await col_chat_history.update_one(
-        {"vin": vin},
-        {"$set": {"history": history}},
+        {"vin": vin, "session_id": session_id},
+        {
+            "$set": {
+                "title": title,
+                "history": history,
+                "updated_at": now
+            }
+        },
         upsert=True
     )
 
@@ -457,17 +505,100 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
         "analysis": analysis,
         "response": analysis,
         "file_id": str(result.inserted_id),
+        "session_id": session_id,
+        "title": title,
     }
 
 @router.post("/audio")
-async def upload_audio(file: UploadFile = File(...), user: dict = Depends(verify_jwt)):
+async def upload_audio(file: UploadFile = File(...), session_id: str = None, user: dict = Depends(verify_jwt)):
     """Accepts an audio recording, sends it to Gemini's multimodal API."""
-    return await _process_media_upload(file, user, _ALLOWED_AUDIO_TYPES, "audio")
+    return await _process_media_upload(file, user, _ALLOWED_AUDIO_TYPES, "audio", session_id)
 
 @router.post("/image")
-async def upload_image(file: UploadFile = File(...), user: dict = Depends(verify_jwt)):
+async def upload_image(file: UploadFile = File(...), session_id: str = None, user: dict = Depends(verify_jwt)):
     """Accepts an image upload, sends it to Gemini's multimodal API."""
-    return await _process_media_upload(file, user, _ALLOWED_IMAGE_TYPES, "image")
+    return await _process_media_upload(file, user, _ALLOWED_IMAGE_TYPES, "image", session_id)
+
+
+@router.get("/chat/sessions")
+async def get_chat_sessions(user: dict = Depends(verify_jwt)):
+    """Retrieves all chat sessions for the user's vehicle, migrating any legacy ones."""
+    user_id = user["sub"]
+    user_doc = await col_users.find_one({"user_id": user_id})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User account not found")
+
+    vin = user_doc.get("vin", "")
+    if not vin:
+        return {"sessions": []}
+
+    # Check for legacy document migration
+    legacy_doc = await col_chat_history.find_one({"vin": vin, "session_id": {"$exists": False}})
+    if legacy_doc:
+        new_sid = str(uuid.uuid4())
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        history = legacy_doc.get("history", [])
+        await col_chat_history.insert_one({
+            "vin": vin,
+            "session_id": new_sid,
+            "title": "Vehicle Diagnostics",
+            "updated_at": now_iso,
+            "history": history
+        })
+        await col_chat_history.delete_one({"_id": legacy_doc["_id"]})
+
+    cursor = col_chat_history.find({"vin": vin}).sort("updated_at", -1)
+    sessions = []
+    async for s in cursor:
+        sessions.append({
+            "session_id": s["session_id"],
+            "title": s.get("title", "Vehicle Diagnostics"),
+            "updated_at": s.get("updated_at", "")
+        })
+    return {"sessions": sessions}
+
+
+@router.put("/chat/session/{session_id}")
+async def rename_session(session_id: str, payload: RenameSessionRequest, user: dict = Depends(verify_jwt)):
+    """Renames an existing chat session."""
+    user_id = user["sub"]
+    user_doc = await col_users.find_one({"user_id": user_id})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User account not found")
+    vin = user_doc.get("vin", "")
+    if not vin:
+        raise HTTPException(status_code=400, detail="No vehicle linked to your account.")
+
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+    result = await col_chat_history.update_one(
+        {"vin": vin, "session_id": session_id},
+        {"$set": {"title": title}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    return {"status": "success", "title": title}
+
+
+@router.delete("/chat/session/{session_id}")
+async def delete_session(session_id: str, user: dict = Depends(verify_jwt)):
+    """Deletes a chat session."""
+    user_id = user["sub"]
+    user_doc = await col_users.find_one({"user_id": user_id})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User account not found")
+    vin = user_doc.get("vin", "")
+    if not vin:
+        raise HTTPException(status_code=400, detail="No vehicle linked to your account.")
+
+    result = await col_chat_history.delete_one({"vin": vin, "session_id": session_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    return {"status": "success"}
 
 
 @router.delete("/account")
@@ -505,9 +636,9 @@ async def delete_account(user: dict = Depends(verify_jwt)):
             }
         )
 
-    # 3. Wipe chat history for this VIN
+    # 3. Wipe chat history for this VIN (all sessions)
     if vin:
-        await col_chat_history.delete_one({"vin": vin})
+        await col_chat_history.delete_many({"vin": vin})
 
     # 4. Wipe media uploads for this user
     await col_media.delete_many({"user_id": user_id})
