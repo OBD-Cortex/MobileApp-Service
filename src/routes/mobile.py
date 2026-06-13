@@ -267,6 +267,42 @@ async def get_profile(user: dict = Depends(verify_jwt)):
     }
 
 
+@router.get("/chat/history")
+async def get_chat_history(user: dict = Depends(verify_jwt)):
+    """
+    Retrieves chat history and parses the stored strings into a JSON array for the mobile app.
+    """
+    user_id = user["sub"]
+    user_doc = await col_users.find_one({"user_id": user_id})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User account not found")
+
+    vin = user_doc.get("vin", "")
+    if not vin:
+        return {"history": []}
+
+    try:
+        chat_doc = await col_chat_history.find_one({"vin": vin})
+        history = chat_doc["history"] if chat_doc else []
+        
+        formatted = []
+        for i in range(0, len(history)-1, 2):
+            user_msg = history[i].replace("User: ", "", 1)
+            ai_msg = history[i+1].replace("AI: ", "", 1)
+            
+            if user_msg.startswith("[Sent image:"):
+                file_id = user_msg.replace("[Sent image: ", "").replace("]", "")
+                formatted.append({"type": "image", "file_id": file_id, "response": ai_msg, "timestamp": str(datetime.datetime.now(datetime.timezone.utc))})
+            elif user_msg.startswith("[Sent audio:"):
+                file_id = user_msg.replace("[Sent audio: ", "").replace("]", "")
+                formatted.append({"type": "audio", "file_id": file_id, "response": ai_msg, "timestamp": str(datetime.datetime.now(datetime.timezone.utc))})
+            else:
+                formatted.append({"type": "text", "query": user_msg, "response": ai_msg, "timestamp": str(datetime.datetime.now(datetime.timezone.utc))})
+                
+        return {"history": formatted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/chat")
 async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jwt)):
     """
@@ -363,7 +399,7 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
     }
     result = await col_media.insert_one(media_doc)
 
-    history.append(f"User: [Sent {media_type}: {file.filename}]")
+    history.append(f"User: [Sent {media_type}: {str(result.inserted_id)}]")
     history.append(f"AI: {analysis}")
     history = history[-6:]
 
@@ -375,7 +411,8 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
 
     return {
         "analysis": analysis,
-        "media_id": str(result.inserted_id),
+        "response": analysis,
+        "file_id": str(result.inserted_id),
     }
 
 @router.post("/audio")
