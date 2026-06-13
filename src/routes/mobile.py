@@ -210,10 +210,10 @@ class ForgotPasswordRequest(BaseModel):
 
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest):
-    \"\"\"
+    """
     Dummy endpoint for password reset.
     In a real system, this would trigger an email with a reset link/OTP.
-    \"\"\"
+    """
     email = payload.email.strip().lower()
     user = await col_users.find_one({"email": email})
     
