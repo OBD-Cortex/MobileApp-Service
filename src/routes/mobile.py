@@ -291,7 +291,7 @@ async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jw
         history = chat_doc["history"] if chat_doc else []
 
         # 2. Generate AI diagnostic
-        answer = generate_diagnostic(request.query, history, vin)
+        answer = await generate_diagnostic(request.query, history, vin)
 
         if answer.startswith("Diagnostic Engine Error:"):
             raise HTTPException(status_code=502, detail=answer)
@@ -344,7 +344,7 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
     chat_doc = await col_chat_history.find_one({"vin": vin})
     history = chat_doc["history"] if chat_doc else []
 
-    analysis = generate_multimodal_diagnostic(media_b64, content_type, vin, history)
+    analysis = await generate_multimodal_diagnostic(media_b64, content_type, vin, history)
 
     if analysis.startswith("Diagnostic Engine Error:"):
         raise HTTPException(status_code=502, detail=analysis)
