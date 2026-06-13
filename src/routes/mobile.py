@@ -286,18 +286,51 @@ async def get_chat_history(user: dict = Depends(verify_jwt)):
         history = chat_doc["history"] if chat_doc else []
         
         formatted = []
-        for i in range(0, len(history)-1, 2):
-            user_msg = history[i].replace("User: ", "", 1)
-            ai_msg = history[i+1].replace("AI: ", "", 1)
-            
-            if user_msg.startswith("[Sent image:"):
-                file_id = user_msg.replace("[Sent image: ", "").replace("]", "")
-                formatted.append({"type": "image", "file_id": file_id, "response": ai_msg, "timestamp": str(datetime.datetime.now(datetime.timezone.utc))})
-            elif user_msg.startswith("[Sent audio:"):
-                file_id = user_msg.replace("[Sent audio: ", "").replace("]", "")
-                formatted.append({"type": "audio", "file_id": file_id, "response": ai_msg, "timestamp": str(datetime.datetime.now(datetime.timezone.utc))})
-            else:
-                formatted.append({"type": "text", "query": user_msg, "response": ai_msg, "timestamp": str(datetime.datetime.now(datetime.timezone.utc))})
+        i = 0
+        while i < len(history):
+            item = history[i]
+            if isinstance(item, dict):
+                if item.get("role") == "user":
+                    response_msg = ""
+                    if i + 1 < len(history):
+                        next_item = history[i+1]
+                        if isinstance(next_item, dict) and next_item.get("role") == "ai":
+                            response_msg = next_item.get("content", "")
+                            i += 1 # Skip AI
+                            
+                    if item.get("type") in ["image", "audio"]:
+                        formatted.append({
+                            "type": item["type"],
+                            "file_id": item.get("file_id", ""),
+                            "response": response_msg,
+                            "timestamp": item.get("timestamp", "")
+                        })
+                    else:
+                        formatted.append({
+                            "type": "text",
+                            "query": item.get("content", ""),
+                            "response": response_msg,
+                            "timestamp": item.get("timestamp", "")
+                        })
+            elif isinstance(item, str) and item.startswith("User:"):
+                user_msg = item.replace("User: ", "", 1)
+                ai_msg = ""
+                if i + 1 < len(history):
+                    next_item = history[i+1]
+                    if isinstance(next_item, str) and next_item.startswith("AI:"):
+                        ai_msg = next_item.replace("AI: ", "", 1)
+                        i += 1 # Skip AI
+                
+                dummy_time = str(datetime.datetime.now(datetime.timezone.utc))
+                if user_msg.startswith("[Sent image:"):
+                    file_id = user_msg.replace("[Sent image: ", "").replace("]", "")
+                    formatted.append({"type": "image", "file_id": file_id, "response": ai_msg, "timestamp": dummy_time})
+                elif user_msg.startswith("[Sent audio:"):
+                    file_id = user_msg.replace("[Sent audio: ", "").replace("]", "")
+                    formatted.append({"type": "audio", "file_id": file_id, "response": ai_msg, "timestamp": dummy_time})
+                else:
+                    formatted.append({"type": "text", "query": user_msg, "response": ai_msg, "timestamp": dummy_time})
+            i += 1
                 
         return {"history": formatted}
     except Exception as e:
@@ -333,9 +366,10 @@ async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jw
             raise HTTPException(status_code=502, detail=answer)
 
         # 3. Update chat history (keep last 6 messages = 3 exchanges)
-        history.append(f"User: {request.query}")
-        history.append(f"AI: {answer}")
-        history = history[-6:]
+        now_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        history.append({"role": "user", "type": "text", "content": request.query, "timestamp": now_ts})
+        history.append({"role": "ai", "type": "text", "content": answer, "timestamp": now_ts})
+        history = history[-100:] # Keep the last 50 exchanges in the database
 
         await col_chat_history.update_one(
             {"vin": vin},
@@ -399,9 +433,19 @@ async def _process_media_upload(file: UploadFile, user: dict, allowed_types: set
     }
     result = await col_media.insert_one(media_doc)
 
-    history.append(f"User: [Sent {media_type}: {str(result.inserted_id)}]")
-    history.append(f"AI: {analysis}")
-    history = history[-6:]
+    history.append({
+        "role": "user", 
+        "type": media_type, 
+        "file_id": str(result.inserted_id), 
+        "timestamp": now
+    })
+    history.append({
+        "role": "ai", 
+        "type": "text", 
+        "content": analysis, 
+        "timestamp": now
+    })
+    history = history[-100:] # Keep the last 50 exchanges in the database
 
     await col_chat_history.update_one(
         {"vin": vin},

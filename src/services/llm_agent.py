@@ -162,7 +162,22 @@ async def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     
     context_knowledge = await get_manual_context(query)
     context_telemetry = await get_telemetry_context(vin)
-    formatted_history = "\n".join(chat_history[-4:]) 
+    
+    formatted_history_list = []
+    for msg in chat_history[-4:]:
+        if isinstance(msg, dict):
+            if msg.get("role") == "user":
+                if msg.get("type") in ["image", "audio"]:
+                    formatted_history_list.append(f"User: [Sent {msg.get('type')}]")
+                else:
+                    formatted_history_list.append(f"User: {msg.get('content', '')}")
+            elif msg.get("role") == "ai":
+                formatted_history_list.append(f"AI: {msg.get('content', '')}")
+        else:
+            # Backward compatibility for legacy string history
+            formatted_history_list.append(str(msg))
+            
+    formatted_history = "\n".join(formatted_history_list)
     
     # ---------------------------------------------------------
     # 2. CONSTRUCT THE SMART PROMPT
