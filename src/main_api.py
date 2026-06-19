@@ -14,7 +14,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 from routes.mobile import router as mobile_router
-from routes.ingest import router as ingest_router
+from routes.auth import router as auth_router
+from routes.chat import router as chat_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,7 +34,8 @@ app = FastAPI(
 
 # Mount mobile application routers
 app.include_router(mobile_router)
-app.include_router(ingest_router)
+app.include_router(auth_router)
+app.include_router(chat_router)
 
 
 # ----------------------------------------------------------

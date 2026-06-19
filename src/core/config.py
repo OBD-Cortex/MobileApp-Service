@@ -31,9 +31,6 @@ MONGO_URI = os.getenv("MONGO_URI")
 # GOOGLE_API_KEY: Authentication key required to call the Gemini API.
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# LLAMA_INDEX_API_KEY: Authentication token required to parse PDF/manual data.
-LLAMA_INDEX_API_KEY = os.getenv("LLAMA_INDEX_API_KEY")
-
 
 
 # JWT_SECRET: Secret key used for signing JWT authentication tokens.

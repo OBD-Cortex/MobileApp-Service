@@ -10,10 +10,8 @@ python-multipart
 
 # AI & Text Processing
 sentence-transformers
-llama-cloud
 
 # Security
 bcrypt
 # Utilities
-polars
 python-dotenv
