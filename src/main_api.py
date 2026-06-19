@@ -4,7 +4,7 @@ import socket
 import uvicorn
 import logging
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
@@ -68,32 +68,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ----------------------------------------------------------
-# SECURITY: CORS Configuration
-# ----------------------------------------------------------
-# CORS_ORIGINS must be set explicitly in production.
-# Wildcard (*) is rejected with a startup warning.
-_cors_raw = os.getenv("CORS_ORIGINS", "")
-if _cors_raw.strip() == "*":
-    logger.error("[!] CORS_ORIGINS cannot be set to wildcard '*' in production for security reasons.")
-    raise ValueError("Insecure CORS configuration. Please specify explicit origins.")
-elif not _cors_raw:
-    logger.warning(
-        "[!] CORS_ORIGINS is not set. "
-        "This blocks all cross-origin requests. "
-        "Set CORS_ORIGINS to a comma-separated list of allowed origins."
-    )
-    CORS_ORIGINS = []
-else:
-    CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "X-API-Key", "X-Device-Token", "X-Device-ID", "X-Signature", "X-Timestamp", "Content-Type"],
-)
 
 @app.get("/api/health")
 async def health_endpoint():
