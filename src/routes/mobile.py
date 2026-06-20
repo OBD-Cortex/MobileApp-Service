@@ -385,7 +385,7 @@ async def mobile_chat(request: MobileChatRequest, user: dict = Depends(verify_jw
         now_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
         history.append({"role": "user", "type": "text", "content": request.query, "timestamp": now_ts})
         history.append({"role": "ai", "type": "text", "content": answer, "timestamp": now_ts})
-        history = history[-100:] # Keep the last 50 exchanges in the database
+        history = history[-100:] # Keep the last 50 exchanges (100 entries) in the database
 
         title = chat_doc.get("title") if chat_doc else None
         if not title:
