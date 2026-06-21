@@ -143,6 +143,39 @@ async def _call_gemini_api(payload: dict, timeout: int = 15) -> str:
 
 
 
+def _extract_response(raw_text: str) -> str:
+    """
+    Extracts the user-facing answer from the model's raw output.
+    Applies three strategies in order of strictness:
+      1. Full <response>...</response> match (ideal path).
+      2. Unclosed <response> tag — model was cut off by max_tokens.
+      3. Strip <analysis> block and return the remainder.
+    The safety gate prevents leaking internal system reasoning to the user
+    when the model emits no tags at all (e.g. after thinkingBudget suppression).
+    """
+    # Strategy 1: full tagged response
+    match = re.search(r'<response>(.*?)</response>', raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # Strategy 2: unclosed tag (truncated by max_tokens)
+    match = re.search(r'<response>(.*)', raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # Strategy 3: strip analysis block and return remainder
+    remainder = re.sub(r'<analysis>.*?</analysis>', '', raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
+
+    # Safety gate: if the remainder looks like leaked system/analysis content
+    # (starts with "Rule N" — a telltale sign the model echoed back system rules)
+    # return a safe user-facing message instead of exposing internal reasoning.
+    if re.match(r'^(Rule\s+\d|RULE\s+\d|tags\.)', remainder, re.IGNORECASE):
+        logger.warning("[!] Response tag leak detected — model emitted no <response> block. Returning safe fallback.")
+        return "I was unable to formulate a clear response. Please try rephrasing your question."
+
+    return remainder
+
+
 def _build_healthy_guard_suffix() -> str:
     """
     Returns an additional prompt block injected when telemetry shows zero DTCs.
@@ -242,17 +275,7 @@ async def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     # ---------------------------------------------------------
     # 4. PARSE OUTPUT
     # ---------------------------------------------------------
-    response_match = re.search(r'<response>(.*?)</response>', raw_text, re.DOTALL | re.IGNORECASE)
-    
-    if response_match:
-        return response_match.group(1).strip()
-    
-    # Fallback: if <response> exists but closing tag </response> is missing
-    response_start = re.search(r'<response>(.*)', raw_text, re.DOTALL | re.IGNORECASE)
-    if response_start:
-        return response_start.group(1).strip()
-    else:
-        return re.sub(r'<analysis>.*?</analysis>', '', raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
+    return _extract_response(raw_text)
 
 
 async def generate_multimodal_diagnostic(
