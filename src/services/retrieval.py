@@ -1,4 +1,5 @@
 import logging
+import re
 from functools import lru_cache
 from core.database import col_knowledge, col_telemetry, col_devices
 from core.models import embed_model
@@ -13,10 +14,55 @@ def get_cached_embedding(query: str) -> list:
     """
     return embed_model.encode(query, normalize_embeddings=True).tolist()
 
-async def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.62) -> str:
+# DTC pattern used for query classification and telemetry scanning
+_DTC_PATTERN = re.compile(r'\b[BCPU]\d{4}\b', re.IGNORECASE)
+
+
+def _resolve_score_threshold(query: str, override: float | None) -> float:
     """
-    Retrieves highly relevant PDF/Manual info using Semantic Vector Search.
-    Filters out "junk" matches using a strict similarity score threshold.
+    Determines the similarity threshold for vector search.
+    DTC-specific queries use a lower threshold (0.55) because DTC chunk
+    headers may not achieve high cosine similarity against free-text queries.
+    General questions use a tighter threshold (0.65) to suppress noise.
+    An explicit override bypasses calibration entirely.
+    """
+    if override is not None:
+        return override
+    return 0.55 if _DTC_PATTERN.search(query) else 0.65
+
+
+def _has_active_dtcs(logs: list) -> bool:
+    """
+    Returns True if any telemetry snapshot contains at least one active
+    confirmed or pending DTC code, regardless of schema variant.
+    Handles both structured {code, description} dicts and raw string fields.
+    """
+    for log in logs:
+        for field in ('confirmed_dtcs', 'pending_dtcs'):
+            for dtc in log.get(field, []):
+                if isinstance(dtc, dict) and dtc.get('code'):
+                    return True
+                if isinstance(dtc, str) and _DTC_PATTERN.search(dtc):
+                    return True
+
+        scan_summary = log.get('scan_summary', '')
+        if scan_summary and _DTC_PATTERN.search(scan_summary):
+            return True
+
+        dtc_field = log.get('dtc')
+        if isinstance(dtc_field, str) and dtc_field.strip().lower() not in ('none', 'none detected', ''):
+            return True
+        if isinstance(dtc_field, list) and dtc_field:
+            return True
+
+    return False
+
+
+async def get_manual_context(query: str, limit: int = 5, score_threshold: float | None = None) -> str:
+    """
+    Retrieves highly relevant PDF/Manual chunks using Semantic Vector Search.
+    Filters out low-relevance matches using a calibrated similarity threshold.
+    Pass an explicit score_threshold to override the automatic DTC calibration.
     """
     try:
         # 0. Validate query input
@@ -26,8 +72,13 @@ async def get_manual_context(query: str, limit: int = 5, score_threshold: float 
         # Normalize queries by stripping them to optimize cache hit rate
         normalized_query = query.strip()
 
+        # Dynamic retrieval similarity threshold calibration (R1):
+        # lower threshold for DTC queries to improve recall on DTC manual chunks
+        resolved_threshold = _resolve_score_threshold(normalized_query, score_threshold)
+
         # 1. Convert the user's text query into a mathematical vector using cached embeddings
         vector = get_cached_embedding(normalized_query)
+        score_threshold = resolved_threshold  # use the resolved value for filtering below
         
         # 2. Query MongoDB Atlas Vector Database
         results = await col_knowledge.aggregate([
@@ -139,6 +190,13 @@ async def get_telemetry_context(vin: str) -> str:
                     f"Active DTCs: {log.get('dtc', 'None')}\n"
                 )
             
+        # Append explicit healthy-vehicle marker when no DTC is present (R1)
+        # This grounds the LLM and prevents hallucinating fault codes.
+        if not _has_active_dtcs(logs):
+            if not context.endswith("\n"):
+                context += "\n"
+            context += "[NO ACTIVE DTCs] Vehicle Status: Healthy. No Diagnostic Trouble Codes detected."
+
         return context
 
     except Exception as e:

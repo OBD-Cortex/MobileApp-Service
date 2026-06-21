@@ -142,6 +142,20 @@ async def _call_gemini_api(payload: dict, timeout: int = 15) -> str:
 
 
 
+
+def _build_healthy_guard_suffix() -> str:
+    """
+    Returns an additional prompt block injected when telemetry shows zero DTCs.
+    Prevents the LLM from fabricating fault codes on a healthy vehicle.
+    """
+    return (
+        "\n\nCRITICAL CONSTRAINTS FOR HEALTHY VEHICLE:\n"
+        "1. The vehicle telemetry has zero DTCs and is healthy.\n"
+        "2. You MUST NOT fabricate any vehicle issues, invent faults, or recommend repairs.\n"
+        "3. Inform the user that the vehicle telemetry shows no fault codes and is currently healthy."
+    )
+
+
 async def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     """Combines Retrieval and LLM calling using Chain of Thought reasoning."""
     
@@ -151,8 +165,25 @@ async def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     # Sanitize user query to prevent XML tag injections
     sanitized_query = query.replace("<", "&lt;").replace(">", "&gt;")
     
-    context_knowledge = await get_manual_context(query)
+    # Fetch telemetry context first (R2)
     context_telemetry = await get_telemetry_context(vin)
+    
+    # Extract DTC codes from telemetry to enrich the knowledge retrieval query (R1)
+    # Appending known DTC codes improves recall of DTC-specific manual chunks.
+    telemetry_dtcs = re.findall(r'\b[BCPU]\d{4}\b', context_telemetry, re.IGNORECASE)
+    # Deduplicate codes and normalize to uppercase
+    telemetry_dtcs = list(dict.fromkeys([dtc.upper() for dtc in telemetry_dtcs]))
+    
+    # Only append DTCs that the user has not already mentioned in their query
+    dtcs_to_add = [
+        dtc for dtc in telemetry_dtcs
+        if not re.search(r'\b' + re.escape(dtc) + r'\b', query, re.IGNORECASE)
+    ]
+            
+    # Formulate enriched retrieval query by appending missing DTCs (R1)
+    retrieval_query = f"{query} {' '.join(dtcs_to_add)}" if dtcs_to_add else query
+        
+    context_knowledge = await get_manual_context(retrieval_query)
     
     formatted_history_list = []
     for msg in chat_history[-4:]:
@@ -176,6 +207,9 @@ async def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "system_prompt.txt")
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt_template = f.read()
+        
+    if not telemetry_dtcs:
+        prompt_template += _build_healthy_guard_suffix()
         
     prompt = prompt_template.format(
         context_telemetry=context_telemetry,
