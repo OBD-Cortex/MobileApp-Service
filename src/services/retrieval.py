@@ -1,10 +1,19 @@
 import logging
+from functools import lru_cache
 from core.database import col_knowledge, col_telemetry, col_devices
 from core.models import embed_model
 
 logger = logging.getLogger(__name__)
 
-async def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.55) -> str:
+@lru_cache(maxsize=1024)
+def get_cached_embedding(query: str) -> list:
+    """
+    Computes vector embedding for the normalized text query.
+    Utilizes LRU cache to reduce latency of duplicate queries to <1ms.
+    """
+    return embed_model.encode(query, normalize_embeddings=True).tolist()
+
+async def get_manual_context(query: str, limit: int = 5, score_threshold: float = 0.62) -> str:
     """
     Retrieves highly relevant PDF/Manual info using Semantic Vector Search.
     Filters out "junk" matches using a strict similarity score threshold.
@@ -14,8 +23,11 @@ async def get_manual_context(query: str, limit: int = 5, score_threshold: float 
         if not query or not query.strip():
             return "No specific manual entry found in the database."
 
-        # 1. Convert the user's text query into a mathematical vector
-        vector = embed_model.encode(query).tolist()
+        # Normalize queries by stripping them to optimize cache hit rate
+        normalized_query = query.strip()
+
+        # 1. Convert the user's text query into a mathematical vector using cached embeddings
+        vector = get_cached_embedding(normalized_query)
         
         # 2. Query MongoDB Atlas Vector Database
         results = await col_knowledge.aggregate([
@@ -23,8 +35,8 @@ async def get_manual_context(query: str, limit: int = 5, score_threshold: float 
                 "index": "vector_index",
                 "path": "embedding",
                 "queryVector": vector,
-                "numCandidates": 50, # Number of nearest neighbors to consider
-                "limit": limit       # Max documents to return
+                "numCandidates": 100, # Wider ANN candidate pool improves recall with sub-linear latency cost
+                "limit": limit       # Max documents to return after ANN candidate selection
             }},
             # Project the text, source, AND expose the hidden similarity score
             {"$project": {
@@ -38,21 +50,24 @@ async def get_manual_context(query: str, limit: int = 5, score_threshold: float 
         if not results: 
             return "No specific manual entry found in the database."
         
-        # 3. Filter by Threshold & Format output
+        # 3. Deduplicate by (source, text prefix) and filter by threshold
+        # Deduplication guards against chunks that were ingested twice under the same
+        # source name occupying multiple result slots and wasting LLM context budget.
+        seen_keys: set = set()
         formatted_docs = []
         for doc in results:
-            # Only feed the AI documents that are actually relevant to the query
-            if doc.get("score", 0) >= score_threshold:
-                
-                # REMOVED the [:400] truncation! 
-                # Let it read the full chunk so it doesn't miss crucial diagnostic steps.
-                # We also provide the "Relevance Score" so the AI knows how much to trust this chunk.
-                formatted_chunk = (
-                    f"--- SOURCE: {doc.get('source', 'Unknown Manual')} "
-                    f"(Relevance: {doc['score']:.2f}) ---\n"
-                    f"{doc.get('text', '')}\n"
-                )
-                formatted_docs.append(formatted_chunk)
+            if doc.get("score", 0) < score_threshold:
+                continue
+            dedup_key = (doc.get("source", ""), doc.get("text", "")[:80])
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+            formatted_chunk = (
+                f"--- SOURCE: {doc.get('source', 'Unknown Manual')} "
+                f"(Relevance: {doc['score']:.2f}) ---\n"
+                f"{doc.get('text', '')}\n"
+            )
+            formatted_docs.append(formatted_chunk)
         
         # If all documents were below the threshold (e.g. the user just said "Hello")
         if not formatted_docs:

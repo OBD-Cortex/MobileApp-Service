@@ -2,6 +2,11 @@
 Models Module - OBD-Cortex
 Provides the local SentenceTransformer model for vector embeddings.
 """
+import torch
+# Limit PyTorch CPU thread usage to 1 to optimize resource allocation on the VM
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
 from sentence_transformers import SentenceTransformer
 import logging
 

@@ -9,27 +9,18 @@ from services.retrieval import get_manual_context, get_telemetry_context
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# [*] MODEL SELECTION MENU (Verified: May 20, 2026)
+# [*] MODEL SELECTION MENU (Verified: June 21, 2026)
 # ==========================================
-# Instructions: Uncomment ONLY the ONE model you want to use. 
-# If you leave all of them commented out (PREFERRED_MODEL = None), 
-# the system will auto-discover the best available Flash model.
+# Uncomment ONLY the ONE model you want to use.
+# If PREFERRED_MODEL = None, the system auto-discovers the best available Flash model.
 
-# --- GEMINI 3 SERIES (The Cutting Edge) ---
-PREFERRED_MODEL = "models/gemini-3.5-flash"           # Recommended: Best overall speed/intelligence ratio
-# PREFERRED_MODEL = "models/gemini-3.1-pro-preview"   # Smartest: Deepest reasoning for complex diagnostics
-# PREFERRED_MODEL = "models/gemini-3.1-flash-lite"    # Fastest: Cost-efficient workhorse
-
-# --- GEMINI 2.5 SERIES (Highly Stable) ---
-# PREFERRED_MODEL = "models/gemini-2.5-pro"           # Stable Pro: Deep reasoning, highly reliable
-# PREFERRED_MODEL = "models/gemini-2.5-flash"         # Stable Flash: Fast, production-ready reasoning
-# PREFERRED_MODEL = "models/gemini-2.5-flash-lite"    # Budget: Lowest latency, lowest cost
-
-# --- GEMINI 2.0 SERIES (Legacy) ---
-# PREFERRED_MODEL = "models/gemini-2.0-flash"         # Warning: Scheduled for deprecation June 1, 2026
+# --- GEMINI 2.5 SERIES (Stable GA — Recommended) ---
+PREFERRED_MODEL = "models/gemini-2.5-flash"         # Active: Best speed/accuracy balance for RAG on mobile
+# PREFERRED_MODEL = "models/gemini-2.5-flash-lite"  # Budget: Lowest latency, lowest cost, reduced accuracy
+# PREFERRED_MODEL = "models/gemini-2.5-pro"         # Pro: Deep reasoning — higher latency, ~10x cost
 
 # --- AUTO DISCOVERY ---
-# PREFERRED_MODEL = None                              # Auto-Select: Dynamically asks Google for the best model
+# PREFERRED_MODEL = None                            # Auto-Select: Dynamically asks Google for the best model
 
 
 # ==========================================
@@ -198,7 +189,15 @@ async def generate_diagnostic(query: str, chat_history: list, vin: str) -> str:
     # ---------------------------------------------------------
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2} 
+        "generationConfig": {
+            # Low temperature for factual, deterministic diagnostic accuracy
+            "temperature": 0.2,
+            # 2048 covers both <analysis> (~200 words) and <response> (~350 words) without truncation
+            "maxOutputTokens": 2048,
+            # thinkingBudget=0 disables chain-of-thought thinking to keep mobile TTFT under 2-4s.
+            # Raise to 512-1024 if deeper multi-step reasoning is ever required at the cost of latency.
+            "thinkingConfig": {"thinkingBudget": 0}
+        }
     }
     
     raw_text = await _call_gemini_api(payload, timeout=15)
@@ -258,7 +257,11 @@ async def generate_multimodal_diagnostic(
                 {"text": extraction_prompt}
             ]
         }],
-        "generationConfig": {"temperature": 0.2}
+        "generationConfig": {
+            "temperature": 0.2,
+            # Symptom extraction needs only a single descriptive sentence; cap tokens to minimize latency
+            "maxOutputTokens": 256
+        }
     }
     
     extracted_symptom = await _call_gemini_api(payload, timeout=30)
